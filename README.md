@@ -52,9 +52,11 @@ divided by quantity (`LOT_SIZE * LOTS`); the trailing stop locks to breakeven on
 **Validate first** — do not skip this:
 
 ```
-python orb_capture.py --expiry 2026-07-28 --date 2026-07-21 --atm 24200
+python orb_capture.py --expiry 2026-07-28 --date 2026-07-21
 python orb_signal.py --replay 2026-07-21
 ```
+(ATM auto-resolves from that date's historical 9:15 spot candle open; pass `--atm`/`--spot`
+only if you want to override it or the historical spot candle isn't available.)
 
 Repeat over 30-60 historical sessions and inspect `orb_trades` in `orb_levels.db` for actual win
 rate before trusting live/auto mode with real capital.

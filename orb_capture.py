@@ -77,6 +77,11 @@ if __name__ == "__main__":
         except Exception:
             atm = nearest_strike(get_spot_ltp())                # fallback before 9:16 candle exists
     else:
-        raise SystemExit("Past date: provide --atm or --spot.")
+        try:
+            atm = nearest_strike(get_spot_open_915(session))   # historical 9:15 candle OPEN
+        except Exception as e:
+            raise SystemExit(
+                "Could not auto-resolve ATM for %s from the historical 9:15 spot candle (%s). "
+                "Provide --atm or --spot instead." % (session, e))
 
     capture(session, expiry, atm)
