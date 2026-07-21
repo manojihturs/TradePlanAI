@@ -2,59 +2,98 @@
 
 Automates a manual Nifty options opening-range strategy:
 
-- **SP zone**: synthetic futures opening range via put-call parity on the ATM CE/PE 9:15 candle (`Fut = Strike + CE - PE`).
+- **SP zone**: synthetic futures opening range via put-call parity on the ATM CE/PE 9:15 candle (`Fut = Strike + CE - PE`). ATM is fixed from the 9:15 candle's OPEN tick, not a live LTP snapshot.
 - **Ladder**: ATM +/- N strike first-candle CE/PE levels, used as a trend-strength ruler.
 - **Signal engine**: a three-state machine (NEUTRAL / CE_WINS / PE_WINS) that only trades on triple confirmation (implied spot breaks the SP zone AND both ATM CE and PE close on the correct side of their own 9:15 range), removing discretionary/sentiment entries.
+- **Risk management**: fixed rupee risk per trade derived from capital + daily loss cap, a hard stop-loss, and a trailing stop-loss (breakeven lock at 1R, then trailing behind each ladder line crossed). A daily loss limit locks the machine out for the rest of the session once hit.
+- **Fully automatic**: no trade-approval prompts. `orb_auto.py` runs unattended day after day.
+- **Telegram notifications**: mandatory for live/auto mode — required on every ENTRY and EXIT.
+- **Logging**: every alert is written to a daily file under `logs/`, in addition to Telegram + console.
+- **Dashboard**: `orb_ui.py` serves a local live status page (capital, day PnL, open position, trade history).
+
+Scope: **Nifty only** for now.
 
 ## Files
 
-- `orb_common.py` — config, Upstox API helpers, SQLite schema, alerting, expiry/ATM resolution.
+- `orb_common.py` — config, Upstox API helpers, SQLite schema, alerting, logging, expiry/ATM resolution, risk sizing.
 - `orb_capture.py` — 9:21 IST job: captures first candles, computes SP zone, stores levels.
-- `orb_signal.py` — replay (backtest a stored day) or live signal/trade loop.
+- `orb_signal.py` — replay (backtest a stored day) or live signal/trade loop, with SL/TSL and daily loss cap.
 - `orb_auto.py` — fully automatic daily runner: resolves expiry+ATM, captures, runs the live loop,
   sleeps until the next trading day, repeats. This is the only script you need to run once you've
   validated the strategy via replay.
+- `orb_ui.py` — Flask dashboard (`http://localhost:8765`) reading `orb_state.json` + the trades DB.
+- `test_offline.py` — network-free regression test of the parity math and state machine.
 
 ## Setup
 
 ```
 pip install -r requirements.txt
 set UPSTOX_ACCESS_TOKEN=<your token>
-set ORB_TG_TOKEN=<telegram bot token>      # optional, for entry/exit alerts
-set ORB_TG_CHAT=<telegram chat id>
+set ORB_TG_TOKEN=<telegram bot token>       # required for live/auto mode
+set ORB_TG_CHAT=<telegram chat id>          # required for live/auto mode
 ```
+
+Optional risk/sizing overrides (defaults shown):
+
+```
+set ORB_CAPITAL=50000
+set ORB_MAX_DAILY_LOSS=2500      # rupees; keep in your 2000-3000 range
+set ORB_LOT_SIZE=65
+set ORB_LOTS=1
+```
+
+Per-trade risk budget = `ORB_MAX_DAILY_LOSS / MAX_STOPS_PER_DAY` (default 2), so two full-loss
+trades in a day exhausts the daily cap. The stop-loss in premium points is that rupee budget
+divided by quantity (`LOT_SIZE * LOTS`); the trailing stop locks to breakeven once a trade is up
+1R and then trails behind each ladder line crossed.
 
 ## Usage
 
-Backfill and validate a known day first (do this before trusting anything below):
+**Validate first** — do not skip this:
 
 ```
 python orb_capture.py --expiry 2026-07-28 --date 2026-07-21 --atm 24200
 python orb_signal.py --replay 2026-07-21
 ```
 
-Fully automatic (recommended once validated):
+Repeat over 30-60 historical sessions and inspect `orb_trades` in `orb_levels.db` for actual win
+rate before trusting live/auto mode with real capital.
+
+**Fully automatic** (once validated):
 
 ```
 python orb_auto.py
 ```
 Leave it running. It sleeps until 09:21 IST each weekday, auto-resolves the nearest weekly
-expiry and today's ATM from the live spot price, captures the opening range, runs the signal
-loop until square-off, and repeats the next day — no daily manual steps. Telegram alerts fire
-on every ENTRY and EXIT automatically (`orb_common.alert`, wired into `orb_signal.on_candle_close`).
-It is not holiday-aware yet; a capture failure on a market holiday is caught and logged, and
-that day is simply skipped.
+expiry and today's ATM from the 9:15 spot open, captures the opening range, runs the signal
+loop until square-off, and repeats the next day — no daily manual steps and no approval prompts.
+Telegram alerts fire on every ENTRY and EXIT. It is not holiday-aware; a capture failure on a
+market holiday is caught, logged, and that day is skipped.
 
-Manual/single-day equivalent (for testing):
+**Dashboard** (run alongside, separate process):
+
+```
+python orb_ui.py
+```
+Open http://localhost:8765 — shows live status (NEUTRAL / IN_TRADE / LOCKED), day PnL vs. the
+daily loss cap, the open position's SL/TSL and remaining targets, and recent trade history.
+Auto-refreshes every 5 seconds.
+
+**Manual/single-day equivalent** (for testing):
 
 ```
 python orb_capture.py --expiry <this week's expiry>   # run at/after 9:21 IST
 python orb_signal.py --live
 ```
 
+**Offline regression test** (no token needed):
+
+```
+python test_offline.py
+```
+
 ## Status
 
-Unvalidated — no backtest run yet. Trail/stop constants in `orb_signal.py`
-(`entry * 0.7`, `crossed * 0.85`) are placeholders; tune them after replaying
-30-60 historical sessions and inspecting the `orb_trades` table before any
-paper or live trading.
+Logic verified via `test_offline.py` (parity math, state transitions, SL/TSL, trade logging).
+**No live backtest has been run yet** — the strategy's actual edge is unproven until you replay
+a real batch of historical sessions and review `orb_trades`. Keep this paper-only until that's done.

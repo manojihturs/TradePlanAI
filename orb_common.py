@@ -2,7 +2,7 @@
 # Auth: set env var UPSTOX_ACCESS_TOKEN before running.
 # Requires: pip install requests
 
-import gzip, io, json, os, sqlite3
+import gzip, io, json, logging, os, sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -24,15 +24,62 @@ SQUARE_OFF  = time(15, 15)
 MAX_SIGNALS_PER_DAY = 2
 MAX_STOPS_PER_DAY   = 2
 
+# ---- Capital / risk / sizing -----------------------------------------
+LOT_SIZE         = int(os.environ.get("ORB_LOT_SIZE", "65"))
+LOTS             = int(os.environ.get("ORB_LOTS", "1"))
+QTY              = LOT_SIZE * LOTS
+INITIAL_CAPITAL  = float(os.environ.get("ORB_CAPITAL", "50000"))
+MAX_DAILY_LOSS   = float(os.environ.get("ORB_MAX_DAILY_LOSS", "2500"))  # rupees, 2000-3000 range
+# Risk budget per trade so that MAX_STOPS_PER_DAY losers exhausts MAX_DAILY_LOSS.
+RISK_PER_TRADE_RUPEES = MAX_DAILY_LOSS / MAX_STOPS_PER_DAY
+SL_POINTS        = RISK_PER_TRADE_RUPEES / QTY          # initial stop, in premium points
+TSL_TRIGGER_R    = 1.0    # move stop to breakeven once profit >= 1R (SL_POINTS)
+TSL_STEP_POINTS  = SL_POINTS * 0.5                       # trail buffer behind each crossed line
+
 _HERE   = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(_HERE, "orb_levels.db")
 MASTER_CACHE = os.path.join(_HERE, "nse_master_cache.json")
+LOG_DIR = os.path.join(_HERE, "logs")
+STATE_PATH = os.path.join(_HERE, "orb_state.json")
 
 API_BASE = "https://api.upstox.com"
 INSTRUMENT_MASTER_URL = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
 
 TELEGRAM_BOT_TOKEN = os.environ.get("ORB_TG_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.environ.get("ORB_TG_CHAT", "")
+
+def require_telegram_config():
+    """Telegram alerts are mandatory for live/auto running - fail fast if unset."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        raise RuntimeError(
+            "ORB_TG_TOKEN and ORB_TG_CHAT must both be set - Telegram notification "
+            "is required before running live or auto mode.")
+
+_logger = None
+
+def setup_logging():
+    global _logger
+    if _logger is not None:
+        return _logger
+    os.makedirs(LOG_DIR, exist_ok=True)
+    fname = os.path.join(LOG_DIR, "orb_%s.log" % datetime.now(IST).strftime("%Y%m%d"))
+    logger = logging.getLogger("orb")
+    logger.setLevel(logging.INFO)
+    if not logger.handlers:
+        fh = logging.FileHandler(fname, encoding="utf-8")
+        fh.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+        logger.addHandler(fh)
+    _logger = logger
+    return logger
+
+def write_state(**fields):
+    """Snapshot current status to disk for the UI (orb_ui.py) to poll."""
+    fields["updated_at"] = datetime.now(IST).isoformat()
+    try:
+        with open(STATE_PATH, "w", encoding="utf-8") as f:
+            json.dump(fields, f, default=str)
+    except Exception:
+        pass
 
 def _headers():
     token = os.environ.get("UPSTOX_ACCESS_TOKEN", "")
@@ -84,6 +131,21 @@ def resolve_option_chain(expiry, atm, gap=STRIKE_GAP, n=NUM_STRIKES):
 def get_spot_ltp():
     data = _get(API_BASE + "/v2/market-quote/ltp", params={"instrument_key": SPOT_KEY})
     return float(list(data["data"].values())[0]["last_price"])
+
+def get_spot_open_915(session_date):
+    """The 9:15 candle's OPEN tick for the underlying index - the reference
+    price used to fix ATM for the day (rather than whatever LTP happens to
+    be when the capture job runs)."""
+    is_today = (session_date == datetime.now(IST).date())
+    if is_today:
+        candles = fetch_intraday_candles(SPOT_KEY, 1)
+    else:
+        candles = fetch_historical_candles(SPOT_KEY, 1, session_date, session_date)
+    target = datetime.combine(session_date, MARKET_OPEN, tzinfo=IST)
+    for cndl in candles:
+        if cndl.ts == target:
+            return cndl.open
+    raise RuntimeError("No 09:15 spot candle found for %s yet." % session_date)
 
 def get_nearest_expiry(session_date):
     """Nearest NIFTY option expiry on/after session_date, from the instrument master."""
@@ -182,6 +244,8 @@ def db():
 def alert(msg):
     stamp = datetime.now(IST).strftime("%H:%M:%S")
     print("[%s] %s" % (stamp, msg), flush=True)
+    if _logger is not None:
+        _logger.info(msg)
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         try:
             requests.post("https://api.telegram.org/bot%s/sendMessage" % TELEGRAM_BOT_TOKEN,

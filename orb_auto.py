@@ -27,7 +27,9 @@ import time as systime
 from datetime import datetime, timedelta
 
 from orb_common import (IST, MARKET_OPEN, ORB_LOCK, SQUARE_OFF,
-                        nearest_strike, get_spot_ltp, get_nearest_expiry, alert)
+                        nearest_strike, get_spot_ltp, get_spot_open_915,
+                        get_nearest_expiry, require_telegram_config,
+                        setup_logging, alert)
 from orb_capture import capture
 from orb_signal import run_live_for_day
 
@@ -48,7 +50,10 @@ def run_one_day():
     session_date = now.date()
     try:
         expiry = get_nearest_expiry(session_date)
-        atm = nearest_strike(get_spot_ltp())
+        try:
+            atm = nearest_strike(get_spot_open_915(session_date))
+        except Exception:
+            atm = nearest_strike(get_spot_ltp())
     except Exception as e:
         alert("AUTO: could not resolve expiry/ATM (%s) - skipping today" % e)
         return
@@ -66,6 +71,8 @@ def run_one_day():
 
 
 def main():
+    require_telegram_config()   # Telegram alerts are mandatory - fail fast if missing
+    setup_logging()
     alert("orb_auto started - fully automatic mode. Waiting for next market open...")
     while True:
         now = datetime.now(IST)

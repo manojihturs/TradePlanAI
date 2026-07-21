@@ -11,7 +11,7 @@
 import argparse
 from datetime import date, datetime, timedelta
 from orb_common import (IST, STRIKE_GAP, NUM_STRIKES, nearest_strike,
-                        resolve_option_chain, get_spot_ltp,
+                        resolve_option_chain, get_spot_ltp, get_spot_open_915,
                         fetch_intraday_candles, fetch_historical_candles,
                         first_5min_candle, db, alert)
 
@@ -72,7 +72,10 @@ if __name__ == "__main__":
     elif a.spot:
         atm = nearest_strike(a.spot)
     elif session == datetime.now(IST).date():
-        atm = nearest_strike(get_spot_ltp())
+        try:
+            atm = nearest_strike(get_spot_open_915(session))   # 9:15 candle OPEN, not live LTP
+        except Exception:
+            atm = nearest_strike(get_spot_ltp())                # fallback before 9:16 candle exists
     else:
         raise SystemExit("Past date: provide --atm or --spot.")
 

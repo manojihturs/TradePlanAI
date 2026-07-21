@@ -18,8 +18,9 @@ import argparse, time as systime
 from datetime import date, datetime
 from orb_common import (IST, CANDLE_MINUTES, SIGNAL_STRIKES, STRIKE_GAP,
                         LAST_ENTRY, SQUARE_OFF, MAX_SIGNALS_PER_DAY,
-                        MAX_STOPS_PER_DAY, fetch_intraday_candles,
-                        fetch_historical_candles, resample, db, alert)
+                        MAX_STOPS_PER_DAY, QTY, MAX_DAILY_LOSS, SL_POINTS,
+                        TSL_TRIGGER_R, TSL_STEP_POINTS, fetch_intraday_candles,
+                        fetch_historical_candles, resample, db, alert, write_state)
 
 def load_day(session_date):
     conn = db()
@@ -53,6 +54,16 @@ class DayState:
         self.signals = 0
         self.stops = 0
         self.locked = False
+        self.daily_pnl_rupees = 0.0
+
+def _snapshot(session_date, atm, sp_high, sp_low, st, note=""):
+    write_state(
+        session_date=str(session_date), atm=atm, sp_low=sp_low, sp_high=sp_high,
+        state=("LOCKED" if st.locked else ("IN_TRADE" if st.position else "NEUTRAL")),
+        position=st.position, signals=st.signals, stops=st.stops,
+        daily_pnl_rupees=round(st.daily_pnl_rupees, 2),
+        max_daily_loss=MAX_DAILY_LOSS, qty=QTY, note=note,
+    )
 
 def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, session_date):
     """ce_c / pe_c are the just-closed N-min candles of the ATM CE / ATM PE."""
@@ -73,34 +84,49 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
             exit_reason = "spot back in zone"
         elif t >= SQUARE_OFF:
             exit_reason = "square off 15:15"
-        elif p["lines"] and px >= p["lines"][0]:
-            crossed = p["lines"].pop(0)
-            p["crossed"] += 1
-            p["trail"] = max(p["trail"], crossed * 0.85)  # trail below the crossed line
-            alert("LINE %d crossed at %.2f | trail -> %.2f | implied spot %.1f"
-                  % (p["crossed"], crossed, p["trail"], implied_spot))
-        if not exit_reason and px <= p["trail"]:
-            exit_reason = "trail hit"
+        else:
+            if p["lines"] and px >= p["lines"][0]:
+                crossed = p["lines"].pop(0)
+                p["crossed"] += 1
+                # TSL: trail a fixed buffer behind each ladder line crossed.
+                p["trail"] = max(p["trail"], crossed - TSL_STEP_POINTS)
+                alert("LINE %d crossed at %.2f | TSL -> %.2f | implied spot %.1f"
+                      % (p["crossed"], crossed, p["trail"], implied_spot))
+            # Breakeven lock once 1R of profit is banked, independent of ladder lines.
+            if px - p["entry"] >= TSL_TRIGGER_R * SL_POINTS:
+                p["trail"] = max(p["trail"], p["entry"])
+            if px <= p["trail"]:
+                exit_reason = "trail hit" if p["trail"] > p["entry"] - SL_POINTS + 1e-9 else "SL hit"
 
         if exit_reason:
-            pnl = px - p["entry"]
+            pnl_pts = px - p["entry"]
+            pnl_rupees = pnl_pts * QTY
             conn.execute("INSERT INTO orb_trades VALUES (?,?,?,?,?,?,?,?,?,?)",
-                         (session_date.isoformat(), p["ts"].isoformat(), p["side"],
+                         (session_date.isoformat(), p["ts"], p["side"],
                           atm, p["entry"], ts.isoformat(), px, exit_reason,
-                          p["crossed"], pnl))
+                          p["crossed"], pnl_pts))
             conn.commit()
-            alert("EXIT %s @ %.2f (%s) | PnL %.2f pts | lines crossed %d"
-                  % (p["side"], px, exit_reason, pnl, p["crossed"]))
-            if pnl < 0:
+            st.daily_pnl_rupees += pnl_rupees
+            alert("EXIT %s @ %.2f (%s) | PnL %.2f pts (Rs %.2f, qty %d) | lines crossed %d | "
+                  "day PnL Rs %.2f"
+                  % (p["side"], px, exit_reason, pnl_pts, pnl_rupees, QTY, p["crossed"],
+                     st.daily_pnl_rupees))
+            if pnl_pts < 0:
                 st.stops += 1
-                if st.stops >= MAX_STOPS_PER_DAY:
-                    st.locked = True
-                    alert("LOCKED OUT: %d stops today. Machine is done. So are you." % st.stops)
+            if st.daily_pnl_rupees <= -MAX_DAILY_LOSS:
+                st.locked = True
+                alert("LOCKED OUT: daily loss Rs %.2f hit max Rs %.2f. No more trades today."
+                      % (st.daily_pnl_rupees, MAX_DAILY_LOSS))
+            elif st.stops >= MAX_STOPS_PER_DAY:
+                st.locked = True
+                alert("LOCKED OUT: %d stops today. Machine is done. So are you." % st.stops)
             st.position = None
+        _snapshot(session_date, atm, sp_high, sp_low, st)
         return
 
     # ---- no position: look for a winner
     if st.locked or st.signals >= MAX_SIGNALS_PER_DAY or t >= LAST_ENTRY:
+        _snapshot(session_date, atm, sp_high, sp_low, st)
         return
 
     ce_wins = (implied_spot > sp_high
@@ -113,19 +139,19 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
     if ce_wins or pe_wins:
         side  = "CE" if ce_wins else "PE"
         entry = ce_c.close if ce_wins else pe_c.close
-        ref   = atm_ce if ce_wins else atm_pe
         st.position = {
-            "side": side, "entry": entry, "ts": ts,
-            "trail": ref["low"] if ce_wins else ref["low"],   # initial stop: own 09:15 low
+            "side": side, "entry": entry, "ts": ts.isoformat(),
+            "trail": max(0.0, entry - SL_POINTS),   # initial SL: fixed rupee risk budget
             "lines": ladder_lines(levels, atm, side),
             "crossed": 0,
         }
-        # tighter initial stop: never risk more than one strike-gap of premium
-        st.position["trail"] = max(st.position["trail"], entry * 0.7)
         st.signals += 1
-        alert("ENTRY: %s WINS | buy ATM %s @ %.2f | implied spot %.1f | zone %d-%d | "
-              "targets %s" % (side, side, entry, implied_spot, sp_low, sp_high,
-                              ["%.1f" % x for x in st.position["lines"]]))
+        alert("ENTRY: %s WINS | buy ATM %s x%d @ %.2f | implied spot %.1f | zone %d-%d | "
+              "SL %.2f (Rs %.0f risk) | targets %s"
+              % (side, side, QTY, entry, implied_spot, sp_low, sp_high,
+                 st.position["trail"], SL_POINTS * QTY,
+                 ["%.1f" % x for x in st.position["lines"]]))
+    _snapshot(session_date, atm, sp_high, sp_low, st)
 
 def run_replay(session_date):
     atm, sp_high, sp_low, levels = load_day(session_date)
