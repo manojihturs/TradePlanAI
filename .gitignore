@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+orb_levels.db
+nse_master_cache.json
+.env
