@@ -55,6 +55,14 @@ def seed_levels(conn):
         # Cross-plotted ladder for a PE_WINS (BOTTOM) trade: the CALL's own
         # first-5min LOW at a neighboring strike.
         (ATM + 50, "CE", "NSE_FO|ITM1PE", 100, 105, 95, 98, 1000),
+        # Competitor reference for the CE side: at strike 24150 (the strike
+        # feeding our own target1, level 160), the competitor's (PE's) own
+        # symmetric reference is THIS record's high field (1.0 - deliberately
+        # tiny so it never interferes with existing PE closes used elsewhere
+        # in these tests; the dedicated competitor test constructs a PE close
+        # at/below it on purpose). Its low is kept just as tiny so it's also
+        # safely below any PE_WINS entry price and doesn't pollute that ladder.
+        (ATM - 50, "CE", "NSE_FO|COMPETITOR_CE_24150", 0.6, 1.0, 0.5, 0.8, 1000),
     ]
     for strike, side, ikey, o, h, l, c, v in rows:
         conn.execute("INSERT OR REPLACE INTO orb_levels VALUES (?,?,?,?,?,?,?,?,?)",
@@ -226,11 +234,13 @@ def main():
           st4.position is not None)
 
     # =====================================================================
-    # Other-strike early exit: if ITM1 (the strike one step out from ATM)
-    # has ALREADY reached ITM2's level, the move has skipped ahead of our
-    # own contract - exit immediately, even though our own price is nowhere
-    # near its own SL, TSL, or first ladder line, and even mid-profit.
+    # Other-strike early exit (the +/- SIGNAL_STRIKES scan): currently
+    # disabled by default (ENABLE_OTHER_STRIKE_EARLY_EXIT=False) in favor of
+    # the simpler single-competitor rule below - but the mechanism itself
+    # must still work correctly when explicitly re-enabled. Toggle it on
+    # just for this block, restore the default after.
     # =====================================================================
+    orb_signal.ENABLE_OTHER_STRIKE_EARLY_EXIT = True
     st5 = DayState()
     ce_e3 = Candle(ts(10, 0), 100, 140, 100, 130, 10)
     pe_e3 = Candle(ts(10, 0), 20, 20, 1, 2, 10)   # implied = 24328 > sp_high -> CE wins, entry 130
@@ -264,6 +274,51 @@ def main():
     on_candle_close(ts(10, 33), ce_tiny_move, pe_tiny_move, ATM, sp_high, sp_low, levels, st6, conn,
                      SESSION, ltp_fn=lambda k: 0.0)
     check("no early exit when no other strike has skipped ahead", st6.position is not None)
+    orb_signal.ENABLE_OTHER_STRIKE_EARLY_EXIT = False   # restore the default before continuing
+
+    # =====================================================================
+    # Simplified competitor exit rule (the ACTIVE rule now): while holding
+    # CE, the competitor is the ATM PE. Its reference level is the SAME
+    # strike (24150) that feeds our own target1, but read from OUR side's
+    # HIGH field (levels[(24150,"CE")]["high"] = 1.0, seeded above). If PE's
+    # own live close falls to/through 1.0 before our target1 (160) is hit,
+    # exit immediately - no ltp_fn/network needed, uses the candles already
+    # passed into on_candle_close.
+    # =====================================================================
+    st7 = DayState()
+    ce_e5 = Candle(ts(11, 0), 100, 140, 100, 130, 10)
+    pe_e5 = Candle(ts(11, 0), 20, 20, 1, 2, 10)   # implied = 24328 > sp_high -> CE wins, entry 130
+    on_candle_close(ts(11, 0), ce_e5, pe_e5, ATM, sp_high, sp_low, levels, st7, conn, SESSION)
+    check("CE entered for competitor-exit test", st7.position is not None)
+    check("competitor reference resolved to strike 24150, level 1.0",
+          st7.position["competitor_strike"] == ATM - 50 and
+          abs(st7.position["competitor_level"] - 1.0) < 1e-9)
+
+    # PE closes at 0.9 (<= competitor level 1.0), CE barely moved (nowhere
+    # near its own target1 of 160, SL, or TSL) - only the competitor rule
+    # can explain an exit here.
+    ce_comp = Candle(ts(11, 3), 130, 135, 128, 132, 10)
+    pe_comp = Candle(ts(11, 3), 2, 2, 0.8, 0.9, 10)
+    on_candle_close(ts(11, 3), ce_comp, pe_comp, ATM, sp_high, sp_low, levels, st7, conn, SESSION)
+    check("position exits when competitor reaches its level before our target1",
+          st7.position is None)
+    comp_exit_row = conn.execute(
+        "SELECT exit_reason, exit_price FROM orb_trades WHERE session_date=? AND entry_ts=?",
+        (SESSION.isoformat(), ts(11, 0).isoformat())).fetchone()
+    check("exit reason names the competitor side and its level",
+          "competitor PE" in comp_exit_row[0] and "1.00" in comp_exit_row[0])
+    check("exit price is our own contract's close (132), not the competitor's",
+          comp_exit_row[1] == 132)
+
+    # Negative control: PE stays well above 1.0 - no competitor-triggered exit.
+    st8 = DayState()
+    ce_e6 = Candle(ts(11, 30), 100, 140, 100, 130, 10)
+    pe_e6 = Candle(ts(11, 30), 20, 20, 1, 2, 10)
+    on_candle_close(ts(11, 30), ce_e6, pe_e6, ATM, sp_high, sp_low, levels, st8, conn, SESSION)
+    ce_nc = Candle(ts(11, 33), 130, 135, 128, 132, 10)
+    pe_nc = Candle(ts(11, 33), 2, 2, 1.5, 1.8, 10)   # stays above 1.0
+    on_candle_close(ts(11, 33), ce_nc, pe_nc, ATM, sp_high, sp_low, levels, st8, conn, SESSION)
+    check("no competitor exit when PE stays above its level", st8.position is not None)
 
     # =====================================================================
     # Daily loss cap: two losing trades should lock the machine out
@@ -343,17 +398,22 @@ def main():
           fresh_candle_ts >= cutoff)
 
     # =====================================================================
-    # run_replay's full-ladder backfill: mock the network call and prove
-    # the whole pipeline (fetch -> resample -> per-strike backfill ->
-    # historical_ltp_fn -> on_candle_close) correctly reproduces the
-    # other-strike early exit from real historical data, not just live
-    # polling. This is the actual backtest path a trader would run.
+    # run_replay's full-ladder backfill: mock the network call and prove the
+    # pipeline (fetch -> resample -> backfill -> on_candle_close) correctly
+    # reproduces the ACTIVE competitor exit rule from historical data, not
+    # just live polling. The competitor rule needs no ltp_fn/network at all
+    # (it reads straight off the candles already passed in), so this proves
+    # it works identically in replay as in live. This is the actual backtest
+    # path a trader would run.
     # =====================================================================
     fake_history = {
         # 5-min buckets from the 09:15 anchor: 09:20, 09:25, 09:30, ...
         "NSE_FO|ATMCE": [(9, 25, 130), (9, 30, 133)],
-        "NSE_FO|ATMPE": [(9, 25, 2),   (9, 30, 1.5)],
-        "NSE_FO|ITM1CE": [(9, 25, 150), (9, 30, 205)],   # reaches ITM2's level (200) on 2nd candle
+        # ATMPE drops to 0.9 on the 2nd candle - at/below the competitor
+        # level (1.0, from the seeded 24150 CE record) - before CE's own
+        # target1 (160) is anywhere close to being hit.
+        "NSE_FO|ATMPE": [(9, 25, 2),   (9, 30, 0.9)],
+        "NSE_FO|ITM1CE": [(9, 25, 150), (9, 30, 178)],
         "NSE_FO|ITM2CE": [(9, 25, 175), (9, 30, 178)],
         "NSE_FO|ITM1PE": [(9, 25, 90),  (9, 30, 91)],
     }
@@ -370,8 +430,8 @@ def main():
         (SESSION.isoformat(), ts(9, 25).isoformat())).fetchone()
     check("run_replay entered the CE trade from mocked historical data",
           replay_row is not None and replay_row[0] == 130)
-    check("run_replay's backfilled other-strike check names the triggering strike (24150)",
-          replay_row is not None and str(ATM - 50) in replay_row[2])
+    check("run_replay's competitor check fires from backfilled data (no ltp_fn needed)",
+          replay_row is not None and "competitor PE" in replay_row[2])
     check("run_replay tags its rows source='replay', not 'live'",
           replay_row is not None and replay_row[3] == "replay")
 

@@ -84,6 +84,44 @@ def build_watch_pairs(levels, atm, winning_side):
     return [{"strike": ladder[i]["strike"], "key": ladder[i]["key"],
              "next_level": ladder[i + 1]["level"]} for i in range(len(ladder) - 1)]
 
+# The other-strike (+/- SIGNAL_STRIKES) early-exit rule above is intact but
+# switched off for now, per instruction, in favor of the simpler single-
+# competitor rule below. Flip this back on to re-enable it.
+ENABLE_OTHER_STRIKE_EARLY_EXIT = False
+
+def competitor_reference(levels, atm, our_side, entry):
+    """Simplified competitor exit rule (replaces the +/- SIGNAL_STRIKES scan
+    for now): only the SAME strike K that feeds our own target1 is used, no
+    other strikes are scanned.
+
+    entry: our own entry price, needed to find the SAME strike that
+    future_lines[0] (our real target1) uses - the ladder's raw first
+    element can be below entry (already-passed, filtered out of our own
+    targets), so this must apply the identical entry-price filter, not
+    just take ladder_strikes_ordered()[0] blindly.
+
+    Our own ladder at K comes from the OPPOSITE side's LOW (ladder_strikes_
+    ordered). The competitor - the ATM contract we did NOT buy - has its own
+    symmetric reference at that same strike K, but from OUR side's HIGH field
+    instead of LOW:
+      TOP    (holding CE, ladder = PE-low @ K) -> competitor (PE) reference
+             = CE-high @ K
+      BOTTOM (holding PE, ladder = CE-low @ K) -> competitor (CE) reference
+             = PE-high @ K
+    In both cases that's levels[(K, our_side)]["high"] - reusing data already
+    captured, no other-strike scanning. If the competitor's live premium
+    falls to/through this level before our own target1 is hit, market
+    leadership has flipped to the competitor - exit now.
+    Returns (K, level) or (None, None) if there's no real target ahead of entry."""
+    ladder = [d for d in ladder_strikes_ordered(levels, atm, our_side) if d["level"] > entry]
+    if not ladder:
+        return None, None
+    k = ladder[0]["strike"]
+    rec = levels.get((k, our_side))
+    if not rec:
+        return None, None
+    return k, rec["high"]
+
 class DayState:
     def __init__(self):
         self.position = None          # dict when in a trade
@@ -126,11 +164,9 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
         exit_reason = None
         trigger_strike = None   # set below if the other-strike early exit fires
 
-        # Other-strike early exit: if a DEEPER strike's own live premium has
-        # already reached the level one rung further out than IT (not our
-        # own R1), the move has skipped ahead somewhere else in the ±6
-        # ladder - exit right now, don't wait for our own SL or TSL.
-        if ltp_fn and p.get("watch_pairs"):
+        # Other-strike early exit (±SIGNAL_STRIKES scan) - currently disabled,
+        # see ENABLE_OTHER_STRIKE_EARLY_EXIT above.
+        if ENABLE_OTHER_STRIKE_EARLY_EXIT and ltp_fn and p.get("watch_pairs"):
             for pair in p["watch_pairs"]:
                 try:
                     live_val = ltp_fn(pair["key"])
@@ -142,6 +178,19 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
                         break
                 except Exception:
                     continue
+
+        # Simplified competitor exit: the ATM contract we did NOT buy has its
+        # own symmetric reference at the SAME strike that feeds our target1
+        # (see competitor_reference()). If the competitor's live price has
+        # fallen to/through that level BEFORE our own target1 is hit, market
+        # leadership has flipped - exit now, don't wait for target1 or SL.
+        if not exit_reason and p.get("lines") and p.get("competitor_level") is not None:
+            competitor_close = pe_c.close if p["side"] == "CE" else ce_c.close
+            if competitor_close <= p["competitor_level"]:
+                exit_reason = ("competitor %s reached %.2f (its level %.2f at strike %d) before "
+                              "our target1 - leadership flipped, early exit"
+                              % ("PE" if p["side"] == "CE" else "CE", competitor_close,
+                                 p["competitor_level"], p["competitor_strike"]))
 
         # Ladder-line trailing and profit-lock run every candle, BEFORE the
         # zone-reentry check below - so a trade that has already locked in
@@ -266,20 +315,25 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
         # those as "crossed" the instant the position opens is noise, not
         # trend progress.
         future_lines = [x for x in ladder_lines(levels, atm, side) if x > entry]
+        competitor_strike, competitor_level = competitor_reference(levels, atm, side, entry)
         st.position = {
             "side": side, "entry": entry, "ts": ts.isoformat(),
             "trail": max(0.0, entry - SL_POINTS),   # initial SL: fixed rupee risk budget
             "lines": future_lines,
             "watch_pairs": build_watch_pairs(levels, atm, side),
+            "competitor_strike": competitor_strike, "competitor_level": competitor_level,
             "crossed": 0,
             "entry_note": entry_note,
         }
         st.signals += 1
+        competitor_txt = (" | competitor %s level %.2f @ strike %d"
+                          % ("PE" if side == "CE" else "CE", competitor_level, competitor_strike)
+                          ) if competitor_level is not None else ""
         alert("ENTRY: %s WINS | ATM %d | buy ATM %s x%d @ %.2f | implied spot %.1f | zone %d-%d | "
-              "SL %.2f (Rs %.0f risk) | targets %s [%s]"
+              "SL %.2f (Rs %.0f risk) | targets %s%s [%s]"
               % (side, atm, side, QTY, entry, implied_spot, sp_low, sp_high,
                  st.position["trail"], SL_POINTS * QTY,
-                 ["%.1f" % x for x in st.position["lines"]], source))
+                 ["%.1f" % x for x in st.position["lines"]], competitor_txt, source))
     _snapshot(session_date, atm, sp_high, sp_low, st)
 
 def run_replay(session_date):
