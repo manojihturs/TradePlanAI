@@ -42,8 +42,12 @@ MAX_DAILY_LOSS   = float(os.environ.get("ORB_MAX_DAILY_LOSS", "2500"))  # rupees
 # Risk budget per trade so that MAX_STOPS_PER_DAY losers exhausts MAX_DAILY_LOSS.
 RISK_PER_TRADE_RUPEES = MAX_DAILY_LOSS / MAX_STOPS_PER_DAY
 SL_POINTS        = RISK_PER_TRADE_RUPEES / QTY          # initial stop, in premium points
-TSL_TRIGGER_R    = 1.0    # move stop to breakeven once profit >= 1R (SL_POINTS)
+TSL_TRIGGER_R    = 1.0    # move stop to lock-in once profit >= 1R (SL_POINTS)
 TSL_STEP_POINTS  = SL_POINTS * 0.5                       # trail buffer behind each crossed line
+# Minimum net premium points a winning trade must lock in once the TSL
+# activates, so a "win" clears exchange fees/STT/brokerage instead of exiting
+# flat (or worse) at plain breakeven.
+MIN_PROFIT_POINTS = float(os.environ.get("ORB_MIN_PROFIT_POINTS", "3"))
 
 _HERE   = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(_HERE, "orb_levels.db")

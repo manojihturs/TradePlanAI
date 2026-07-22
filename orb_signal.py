@@ -19,7 +19,8 @@ from datetime import date, datetime, timedelta
 from orb_common import (IST, CANDLE_MINUTES, SIGNAL_STRIKES, STRIKE_GAP,
                         LAST_ENTRY, SQUARE_OFF, MAX_SIGNALS_PER_DAY,
                         MAX_STOPS_PER_DAY, QTY, MAX_DAILY_LOSS, SL_POINTS,
-                        TSL_TRIGGER_R, TSL_STEP_POINTS, APP_NAME, SERVER_NAME,
+                        TSL_TRIGGER_R, TSL_STEP_POINTS, MIN_PROFIT_POINTS,
+                        APP_NAME, SERVER_NAME,
                         fetch_intraday_candles, fetch_historical_candles,
                         resample, db, alert, write_state)
 import orb_journal
@@ -81,25 +82,36 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
         px = ce_c.close if p["side"] == "CE" else pe_c.close
         exit_reason = None
 
-        if p["side"] == "CE" and implied_spot < sp_high:
-            exit_reason = "spot back in zone"
-        elif p["side"] == "PE" and implied_spot > sp_low:
-            exit_reason = "spot back in zone"
-        elif t >= SQUARE_OFF:
+        # Ladder-line trailing and profit-lock run every candle, BEFORE the
+        # zone-reentry check below - so a trade that has already locked in
+        # MIN_PROFIT_POINTS is protected by the trail, not by the
+        # directional (zone) thesis, which can whipsaw back before the
+        # trail is actually touched.
+        if p["lines"] and px >= p["lines"][0]:
+            crossed = p["lines"].pop(0)
+            p["crossed"] += 1
+            # TSL: trail a fixed buffer behind each ladder line crossed.
+            p["trail"] = max(p["trail"], crossed - TSL_STEP_POINTS)
+            alert("LINE %d crossed at %.2f | TSL -> %.2f | implied spot %.1f"
+                  % (p["crossed"], crossed, p["trail"], implied_spot))
+        # Profit lock once 1R is banked: TSL floor moves to entry + MIN_PROFIT_POINTS
+        # (not plain breakeven) so a "win" clears fees/STT/brokerage instead of
+        # exiting flat or net-negative after costs. Independent of ladder lines.
+        if px - p["entry"] >= TSL_TRIGGER_R * SL_POINTS:
+            p["trail"] = max(p["trail"], p["entry"] + MIN_PROFIT_POINTS)
+        profit_locked = p["trail"] >= p["entry"] + MIN_PROFIT_POINTS - 1e-9
+
+        zone_reentry = ((p["side"] == "CE" and implied_spot < sp_high)
+                         or (p["side"] == "PE" and implied_spot > sp_low))
+
+        if t >= SQUARE_OFF:
             exit_reason = "square off 15:15 (forced flat)"
-        else:
-            if p["lines"] and px >= p["lines"][0]:
-                crossed = p["lines"].pop(0)
-                p["crossed"] += 1
-                # TSL: trail a fixed buffer behind each ladder line crossed.
-                p["trail"] = max(p["trail"], crossed - TSL_STEP_POINTS)
-                alert("LINE %d crossed at %.2f | TSL -> %.2f | implied spot %.1f"
-                      % (p["crossed"], crossed, p["trail"], implied_spot))
-            # Breakeven lock once 1R of profit is banked, independent of ladder lines.
-            if px - p["entry"] >= TSL_TRIGGER_R * SL_POINTS:
-                p["trail"] = max(p["trail"], p["entry"])
-            if px <= p["trail"]:
-                exit_reason = "trail hit" if p["trail"] > p["entry"] - SL_POINTS + 1e-9 else "SL hit"
+        elif zone_reentry and not profit_locked:
+            # Directional thesis invalidated before any profit was secured -
+            # cut immediately, same as before.
+            exit_reason = "spot back in zone"
+        elif px <= p["trail"]:
+            exit_reason = "trail hit" if profit_locked else "SL hit"
 
         if exit_reason:
             pnl_pts = px - p["entry"]

@@ -23,7 +23,8 @@ orb_journal.JOURNAL_PATH = os.path.join(tempfile.gettempdir(), "orb_test_journal
 if os.path.exists(orb_journal.JOURNAL_PATH):
     os.remove(orb_journal.JOURNAL_PATH)
 
-from orb_common import IST, Candle, db, nearest_strike, SL_POINTS, MAX_DAILY_LOSS, QTY
+from orb_common import (IST, Candle, db, nearest_strike, SL_POINTS, MAX_DAILY_LOSS, QTY,
+                        MIN_PROFIT_POINTS, TSL_STEP_POINTS)
 from orb_signal import DayState, on_candle_close, ladder_lines, CANDLE_MINUTES
 from orb_auto import should_run_today_now, next_market_open
 from datetime import timedelta
@@ -139,14 +140,15 @@ def main():
     check("PE initial SL = entry - SL_POINTS (%.2f)" % expected_sl,
           abs(st2.position["trail"] - expected_sl) < 1e-6)
 
-    # push PE up through its ladder line (95) AND past the 1R breakeven trigger (~19.2 pts)
+    # push PE up through its ladder line (95) AND past the 1R profit-lock trigger (~19.2 pts)
     ce_lo2 = Candle(ts(12, 3), 40, 40, 30, 33, 10)
     pe_up  = Candle(ts(12, 3), 80, 105, 80, 102, 10)   # +22 pts, crosses line 95 too
     on_candle_close(ts(12, 3), ce_lo2, pe_up, ATM, sp_high, sp_low, levels, st2, conn, SESSION)
-    expected_trail = max(80.0, 95 - (SL_POINTS * 0.5))   # line-cross trail vs. breakeven, whichever is higher
-    check("trail locks at max(breakeven, line-cross trail) = %.2f" % expected_trail,
+    expected_trail = max(80.0 + MIN_PROFIT_POINTS, 95 - TSL_STEP_POINTS)   # profit-lock floor vs. line-cross trail
+    check("trail locks at max(entry+MIN_PROFIT_POINTS, line-cross trail) = %.2f" % expected_trail,
           abs(st2.position["trail"] - expected_trail) < 1e-6)
-    check("trail is at/above breakeven (no longer a losing trade)", st2.position["trail"] >= 80)
+    check("trail is at/above entry+MIN_PROFIT_POINTS (win covers fees)",
+          st2.position["trail"] >= 80 + MIN_PROFIT_POINTS - 1e-9)
 
     # price pulls back to just under that trail -> exits in profit, not counted as a stop
     ce_lo3 = Candle(ts(12, 6), 33, 40, 30, 35, 10)
@@ -155,6 +157,46 @@ def main():
     on_candle_close(ts(12, 6), ce_lo3, pe_be, ATM, sp_high, sp_low, levels, st2, conn, SESSION)
     check("trail-hit exit closes position", st2.position is None)
     check("profitable trail exit is not counted as a stop", st2.stops == stops_before)
+    last_pnl = conn.execute(
+        "SELECT pnl_points FROM orb_trades WHERE session_date=? AND side='PE' "
+        "ORDER BY rowid DESC LIMIT 1", (SESSION.isoformat(),)).fetchone()[0]
+    check("realized win is >= MIN_PROFIT_POINTS (%.2f pts, needed %.2f)" % (last_pnl, MIN_PROFIT_POINTS),
+          last_pnl >= MIN_PROFIT_POINTS - 1e-6)
+
+    # =====================================================================
+    # Profit-lock floor holds even with NO ladder line crossed (pure 1R
+    # trigger) - proves the fix isn't accidentally riding on the line-cross
+    # trail dominating in the scenario above.
+    # =====================================================================
+    st4 = DayState()
+    ce_e2 = Candle(ts(9, 30), 100, 140, 100, 130, 10)
+    pe_e2 = Candle(ts(9, 30), 20, 20, 1, 2, 10)          # implied = 24200+130-2=24328 > sp_high -> CE wins
+    on_candle_close(ts(9, 30), ce_e2, pe_e2, ATM, sp_high, sp_low, levels, st4, conn, SESSION)
+    check("CE entered for profit-lock-only test", st4.position is not None)
+    # move up exactly past 1R but stay well below the first ladder line (160)
+    just_past_1r = 130 + SL_POINTS + 0.5
+    ce_1r = Candle(ts(9, 33), 130, just_past_1r + 1, 128, just_past_1r, 10)
+    pe_1r = Candle(ts(9, 33), 3, 3, 1, 2, 10)
+    on_candle_close(ts(9, 33), ce_1r, pe_1r, ATM, sp_high, sp_low, levels, st4, conn, SESSION)
+    check("no ladder line crossed yet (still below 160)", st4.position["crossed"] == 0)
+    check("trail floor is exactly entry + MIN_PROFIT_POINTS (%.2f), not plain breakeven"
+          % (130 + MIN_PROFIT_POINTS),
+          abs(st4.position["trail"] - (130 + MIN_PROFIT_POINTS)) < 1e-6)
+
+    # =====================================================================
+    # Profit-lock takes priority over "spot back in zone": once the TSL
+    # floor has moved above entry+MIN_PROFIT_POINTS, a whipsaw back inside
+    # the SP zone must NOT force an exit as long as price is still above
+    # the trail - the profit floor, not the directional thesis, now governs.
+    # =====================================================================
+    implied_inside_zone_ce = sp_high - 1   # implied spot back inside zone for a CE trade
+    ce_whipsaw = Candle(ts(9, 36), just_past_1r, just_past_1r + 1, just_past_1r - 1, just_past_1r, 10)
+    # choose PE close so implied_spot = ATM + ce.close - pe.close lands inside the zone
+    pe_whipsaw_close = ATM + just_past_1r - implied_inside_zone_ce
+    pe_whipsaw = Candle(ts(9, 36), pe_whipsaw_close, pe_whipsaw_close, pe_whipsaw_close, pe_whipsaw_close, 10)
+    on_candle_close(ts(9, 36), ce_whipsaw, pe_whipsaw, ATM, sp_high, sp_low, levels, st4, conn, SESSION)
+    check("profit-locked position survives a zone whipsaw (not force-exited)",
+          st4.position is not None)
 
     # =====================================================================
     # Daily loss cap: two losing trades should lock the machine out
