@@ -24,7 +24,7 @@ if os.path.exists(orb_journal.JOURNAL_PATH):
     os.remove(orb_journal.JOURNAL_PATH)
 
 from orb_common import (IST, Candle, db, nearest_strike, SL_POINTS, MAX_DAILY_LOSS, QTY,
-                        MIN_PROFIT_POINTS, TSL_STEP_POINTS, MIN_ENTRY_MARGIN_POINTS)
+                        MIN_PROFIT_POINTS, MIN_ENTRY_MARGIN_POINTS)
 import orb_signal
 from orb_signal import (DayState, on_candle_close, ladder_lines, build_watch_pairs,
                         run_replay, CANDLE_MINUTES)
@@ -151,24 +151,23 @@ def main():
     check("CE_WINS entry taken", st.position is not None and st.position["side"] == "CE")
     check("entry price recorded at candle close (130)", st.position and st.position["entry"] == 130)
 
-    # --- line cross: next CE close reaches the ITM1 CE ladder line (160)
+    # --- LINE 1 cross: CE close reaches the ITM1 CE ladder line (160). Per
+    # instruction, this is now an IMMEDIATE exit (confirmed win, don't hold
+    # out trailing for line 2/3) - not a trail update.
     ce_line = Candle(ts(10, 33), 130, 165, 128, 162, 10)
     pe_line = Candle(ts(10, 33), 20, 20, 15, 17, 10)
     on_candle_close(ts(10, 33), ce_line, pe_line, ATM, sp_high, sp_low, levels, st, conn, SESSION)
-    check("line crossed increments counter", st.position and st.position["crossed"] == 1)
-
-    # --- exit: implied spot falls back inside SP zone
-    ce_back = Candle(ts(11, 0), 130, 130, 100, 105, 10)
-    pe_back = Candle(ts(11, 0), 40, 60, 40, 55, 10)  # implied spot = 24200+105-55=24250 -> inside zone
-    on_candle_close(ts(11, 0), ce_back, pe_back, ATM, sp_high, sp_low, levels, st, conn, SESSION)
-    check("position closed on zone re-entry", st.position is None)
+    check("LINE 1 cross exits the position immediately (confirmed win)",
+          st.position is None and st.signals == 1)
 
     trades = conn.execute(
         "SELECT side, entry_price, exit_price, exit_reason, lines_crossed, entry_note, exit_note, source "
         "FROM orb_trades WHERE session_date=?", (SESSION.isoformat(),)).fetchall()
     check("one trade logged", len(trades) == 1)
     check("entry_note recorded", bool(trades[0][5]) and "CE WINS" in trades[0][5])
-    check("exit_note recorded", bool(trades[0][6]) and "Loss" in trades[0][6])
+    check("exit_note records a profit via LINE 1 target hit, not a loss",
+          bool(trades[0][6]) and "Profit" in trades[0][6] and "LINE 1 target hit" in trades[0][3])
+    check("exit price is the line level (162), pnl is a win", trades[0][2] == 162 and trades[0][2] > trades[0][1])
     check("source defaults to 'live' when not passed explicitly", trades[0][7] == "live")
     print("Trade row:", trades[0])
 
@@ -195,23 +194,13 @@ def main():
     check("PE initial SL = entry - SL_POINTS (%.2f)" % expected_sl,
           abs(st2.position["trail"] - expected_sl) < 1e-6)
 
-    # push PE up through its ladder line (95) AND past the 1R profit-lock trigger (~19.2 pts)
+    # PE crosses its LINE 1 (95) - per instruction, immediate exit, confirmed
+    # win, not a trail update.
     ce_lo2 = Candle(ts(12, 3), 40, 40, 30, 33, 10)
-    pe_up  = Candle(ts(12, 3), 80, 105, 80, 102, 10)   # +22 pts, crosses line 95 too
+    pe_up  = Candle(ts(12, 3), 80, 105, 80, 102, 10)
     on_candle_close(ts(12, 3), ce_lo2, pe_up, ATM, sp_high, sp_low, levels, st2, conn, SESSION)
-    expected_trail = max(80.0 + MIN_PROFIT_POINTS, 95 - TSL_STEP_POINTS)   # profit-lock floor vs. line-cross trail
-    check("trail locks at max(entry+MIN_PROFIT_POINTS, line-cross trail) = %.2f" % expected_trail,
-          abs(st2.position["trail"] - expected_trail) < 1e-6)
-    check("trail is at/above entry+MIN_PROFIT_POINTS (win covers fees)",
-          st2.position["trail"] >= 80 + MIN_PROFIT_POINTS - 1e-9)
-
-    # price pulls back to just under that trail -> exits in profit, not counted as a stop
-    ce_lo3 = Candle(ts(12, 6), 33, 40, 30, 35, 10)
-    pe_be  = Candle(ts(12, 6), 100, 100, 84, expected_trail - 0.01, 10)
-    stops_before = st2.stops
-    on_candle_close(ts(12, 6), ce_lo3, pe_be, ATM, sp_high, sp_low, levels, st2, conn, SESSION)
-    check("trail-hit exit closes position", st2.position is None)
-    check("profitable trail exit is not counted as a stop", st2.stops == stops_before)
+    check("LINE 1 cross exits the PE position immediately (confirmed win)",
+          st2.position is None and st2.signals == 1)
     last_pnl = conn.execute(
         "SELECT pnl_points FROM orb_trades WHERE session_date=? AND side='PE' "
         "ORDER BY rowid DESC LIMIT 1", (SESSION.isoformat(),)).fetchone()[0]

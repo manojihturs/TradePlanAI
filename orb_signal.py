@@ -21,7 +21,7 @@ from datetime import date, datetime, timedelta
 from orb_common import (IST, CANDLE_MINUTES, SIGNAL_STRIKES, STRIKE_GAP, ORB_LOCK,
                         LAST_ENTRY, SQUARE_OFF, MAX_SIGNALS_PER_DAY,
                         MAX_STOPS_PER_DAY, QTY, MAX_DAILY_LOSS, SL_POINTS,
-                        TSL_TRIGGER_R, TSL_STEP_POINTS, MIN_PROFIT_POINTS,
+                        TSL_TRIGGER_R, MIN_PROFIT_POINTS,
                         MIN_ENTRY_MARGIN_POINTS,
                         APP_NAME, SERVER_NAME, get_ltp,
                         fetch_intraday_candles, fetch_historical_candles,
@@ -198,15 +198,16 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
         # MIN_PROFIT_POINTS is protected by the trail, not by the
         # directional (zone) thesis, which can whipsaw back before the
         # trail is actually touched.
-        if exit_reason:
-            pass   # early exit already decided above - skip trail/zone logic entirely
-        elif p["lines"] and px >= p["lines"][0]:
-            crossed = p["lines"].pop(0)
+        # LINE 1 crossed = confirmed win, take it now. Per instruction: don't
+        # hold out trailing for line 2/3/etc - the first target hit IS the
+        # exit signal, immediately, so the machine is free to look for the
+        # next opportunity right away instead of riding one position and
+        # hoping for more.
+        if not exit_reason and p["lines"] and px >= p["lines"][0]:
+            crossed = p["lines"][0]
             p["crossed"] += 1
-            # TSL: trail a fixed buffer behind each ladder line crossed.
-            p["trail"] = max(p["trail"], crossed - TSL_STEP_POINTS)
-            alert("LINE %d crossed at %.2f | TSL -> %.2f | implied spot %.1f"
-                  % (p["crossed"], crossed, p["trail"], implied_spot))
+            exit_reason = "LINE 1 target hit (%.2f) - confirmed, exit now" % crossed
+
         # Profit lock once 1R is banked: TSL floor moves to entry + MIN_PROFIT_POINTS
         # (not plain breakeven) so a "win" clears fees/STT/brokerage instead of
         # exiting flat or net-negative after costs. Independent of ladder lines.
@@ -218,7 +219,7 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
                          or (p["side"] == "PE" and implied_spot > sp_low))
 
         if exit_reason:
-            pass   # already decided by the other-strike early exit above - highest priority
+            pass   # already decided above (early exit or LINE 1 target) - highest priority
         elif t >= SQUARE_OFF:
             exit_reason = "square off 15:15 (forced flat)"
         elif zone_reentry and not profit_locked:
