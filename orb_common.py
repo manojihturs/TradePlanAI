@@ -17,8 +17,8 @@ except ImportError:
 INSTRUMENT     = "NIFTY"
 SPOT_KEY       = "NSE_INDEX|Nifty 50"
 STRIKE_GAP     = 50
-NUM_STRIKES    = 9      # ladder = ATM +/- 9
-SIGNAL_STRIKES = 4      # only ATM +/- 4 gate signals (deep strikes = noise)
+NUM_STRIKES    = 6      # ladder = ATM +/- 6 (ITM6..ATM..OTM6, per the trader's own chart setup)
+SIGNAL_STRIKES = 6      # all +/- 6 strikes gate signals and the other-strike early-exit rule
 CANDLE_MINUTES = 3      # confirmation candle size (your charts are 3-min)
 
 IST         = ZoneInfo("Asia/Kolkata")

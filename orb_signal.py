@@ -20,7 +20,7 @@ from orb_common import (IST, CANDLE_MINUTES, SIGNAL_STRIKES, STRIKE_GAP,
                         LAST_ENTRY, SQUARE_OFF, MAX_SIGNALS_PER_DAY,
                         MAX_STOPS_PER_DAY, QTY, MAX_DAILY_LOSS, SL_POINTS,
                         TSL_TRIGGER_R, TSL_STEP_POINTS, MIN_PROFIT_POINTS,
-                        APP_NAME, SERVER_NAME,
+                        APP_NAME, SERVER_NAME, get_ltp,
                         fetch_intraday_candles, fetch_historical_candles,
                         resample, db, alert, write_state)
 import orb_journal
@@ -51,6 +51,27 @@ def ladder_lines(levels, atm, winning_side):
             lines.append(rec["high"])
     return sorted(lines)
 
+def ladder_strikes_ordered(levels, atm, winning_side):
+    """Same ladder as ladder_lines(), but keeping (strike, instrument_key, level)
+    together and ordered ATM-outward (nearest strike first) - needed so we know
+    WHICH contract's own live premium to watch for the early-exit rule below."""
+    out = []
+    for i in range(1, SIGNAL_STRIKES + 1):
+        k = atm - i * STRIKE_GAP if winning_side == "CE" else atm + i * STRIKE_GAP
+        rec = levels.get((k, winning_side))
+        if rec:
+            out.append({"strike": k, "key": rec["key"], "level": rec["high"]})
+    return out
+
+def build_watch_pairs(levels, atm, winning_side):
+    """Early-exit rule: for each strike in the ladder (ITM1..ITM6 or OTM1..OTM6),
+    pair its OWN instrument_key with the NEXT strike's level. If that strike's own
+    live premium ever reaches the next rung before our position reaches its own R1,
+    the move has already skipped ahead at a different strike - exit now rather
+    than waiting for our own target or SL."""
+    ladder = ladder_strikes_ordered(levels, atm, winning_side)
+    return [(ladder[i]["key"], ladder[i + 1]["level"]) for i in range(len(ladder) - 1)]
+
 class DayState:
     def __init__(self):
         self.position = None          # dict when in a trade
@@ -69,8 +90,14 @@ def _snapshot(session_date, atm, sp_high, sp_low, st, note=""):
         max_daily_loss=MAX_DAILY_LOSS, qty=QTY, note=note,
     )
 
-def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, session_date):
-    """ce_c / pe_c are the just-closed N-min candles of the ATM CE / ATM PE."""
+def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, session_date,
+                     ltp_fn=None):
+    """ce_c / pe_c are the just-closed N-min candles of the ATM CE / ATM PE.
+
+    ltp_fn: optional callable(instrument_key) -> float, used only for the
+    other-strike early-exit check below. Pass None to disable that check
+    (e.g. in replay, where we don't have live/intrabar data for every
+    strike in the ladder - only its own 09:15 first candle)."""
     implied_spot = atm + ce_c.close - pe_c.close
     atm_ce = levels[(atm, "CE")]
     atm_pe = levels[(atm, "PE")]
@@ -82,12 +109,27 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
         px = ce_c.close if p["side"] == "CE" else pe_c.close
         exit_reason = None
 
+        # Other-strike early exit: if a DEEPER strike's own live premium has
+        # already reached the level one rung further out than IT (not our
+        # own R1), the move has skipped ahead somewhere else in the ±6
+        # ladder - exit right now, don't wait for our own SL or TSL.
+        if ltp_fn and p.get("watch_pairs"):
+            for ikey, next_level in p["watch_pairs"]:
+                try:
+                    if ltp_fn(ikey) >= next_level:
+                        exit_reason = "other strike reached its next level first - early exit"
+                        break
+                except Exception:
+                    continue
+
         # Ladder-line trailing and profit-lock run every candle, BEFORE the
         # zone-reentry check below - so a trade that has already locked in
         # MIN_PROFIT_POINTS is protected by the trail, not by the
         # directional (zone) thesis, which can whipsaw back before the
         # trail is actually touched.
-        if p["lines"] and px >= p["lines"][0]:
+        if exit_reason:
+            pass   # early exit already decided above - skip trail/zone logic entirely
+        elif p["lines"] and px >= p["lines"][0]:
             crossed = p["lines"].pop(0)
             p["crossed"] += 1
             # TSL: trail a fixed buffer behind each ladder line crossed.
@@ -104,7 +146,9 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
         zone_reentry = ((p["side"] == "CE" and implied_spot < sp_high)
                          or (p["side"] == "PE" and implied_spot > sp_low))
 
-        if t >= SQUARE_OFF:
+        if exit_reason:
+            pass   # already decided by the other-strike early exit above - highest priority
+        elif t >= SQUARE_OFF:
             exit_reason = "square off 15:15 (forced flat)"
         elif zone_reentry and not profit_locked:
             # Directional thesis invalidated before any profit was secured -
@@ -191,6 +235,7 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
             "side": side, "entry": entry, "ts": ts.isoformat(),
             "trail": max(0.0, entry - SL_POINTS),   # initial SL: fixed rupee risk budget
             "lines": ladder_lines(levels, atm, side),
+            "watch_pairs": build_watch_pairs(levels, atm, side),
             "crossed": 0,
             "entry_note": entry_note,
         }
@@ -210,7 +255,9 @@ def run_replay(session_date):
     pe = resample(fetch_historical_candles(pe_key, 1, session_date, session_date), CANDLE_MINUTES)
     pe_by_ts = {c.ts: c for c in pe}
     st, conn = DayState(), db()
-    alert("REPLAY %s | ATM %d | SP zone %d-%d" % (session_date, atm, sp_low, sp_high))
+    alert("REPLAY %s | ATM %d | SP zone %d-%d | note: other-strike early-exit rule is "
+          "disabled in replay - only the ATM's own candles are backfilled, not live/intrabar "
+          "premiums for every ±%d ladder strike." % (session_date, atm, sp_low, sp_high, SIGNAL_STRIKES))
     for c in ce:
         mate = pe_by_ts.get(c.ts)
         if mate and c.ts.time() >= datetime.strptime("09:21", "%H:%M").time():
@@ -264,7 +311,7 @@ def run_live_for_day(session_date):
                 if mate:
                     seen.add(c.ts)
                     on_candle_close(c.ts, c, mate, atm, sp_high, sp_low,
-                                    levels, st, conn, session_date)
+                                    levels, st, conn, session_date, ltp_fn=get_ltp)
         except Exception as e:
             alert("live loop error: %s" % e)
         systime.sleep(20)

@@ -25,7 +25,7 @@ if os.path.exists(orb_journal.JOURNAL_PATH):
 
 from orb_common import (IST, Candle, db, nearest_strike, SL_POINTS, MAX_DAILY_LOSS, QTY,
                         MIN_PROFIT_POINTS, TSL_STEP_POINTS)
-from orb_signal import DayState, on_candle_close, ladder_lines, CANDLE_MINUTES
+from orb_signal import DayState, on_candle_close, ladder_lines, build_watch_pairs, CANDLE_MINUTES
 from orb_auto import should_run_today_now, next_market_open
 from datetime import timedelta
 
@@ -41,6 +41,7 @@ def seed_levels(conn):
         (ATM, "CE", "NSE_FO|ATMCE", 90, 114.6, 47.1, 100, 1000),
         (ATM, "PE", "NSE_FO|ATMPE", 50, 69,   29.15, 60, 1000),
         (ATM - 50, "CE", "NSE_FO|ITM1CE", 130, 160, 90, 140, 1000),
+        (ATM - 100, "CE", "NSE_FO|ITM2CE", 170, 200, 120, 180, 1000),   # for the early-exit test
         # ATM+50 strike is ITM for a PUT (strike > spot) -> higher intrinsic value,
         # so its first-candle high must exceed the ATM PE high (69), mirroring CE.
         (ATM + 50, "PE", "NSE_FO|ITM1PE", 85, 95, 60, 90, 1000),
@@ -77,7 +78,11 @@ def main():
         levels[(strike, side)] = {"key": ikey, "high": fh, "low": flo}
 
     lines = ladder_lines(levels, ATM, "CE")
-    check("ladder_lines returns ITM1 CE high for CE side", lines == [160])
+    check("ladder_lines returns ITM1+ITM2 CE highs for CE side", lines == [160, 200])
+
+    watch_pairs = build_watch_pairs(levels, ATM, "CE")
+    check("watch_pairs pairs ITM1's key with ITM2's level (200)",
+          watch_pairs == [("NSE_FO|ITM1CE", 200)])
 
     # --- NEUTRAL: implied spot inside zone -> no trade
     st = DayState()
@@ -197,6 +202,46 @@ def main():
     on_candle_close(ts(9, 36), ce_whipsaw, pe_whipsaw, ATM, sp_high, sp_low, levels, st4, conn, SESSION)
     check("profit-locked position survives a zone whipsaw (not force-exited)",
           st4.position is not None)
+
+    # =====================================================================
+    # Other-strike early exit: if ITM1 (the strike one step out from ATM)
+    # has ALREADY reached ITM2's level, the move has skipped ahead of our
+    # own contract - exit immediately, even though our own price is nowhere
+    # near its own SL, TSL, or first ladder line, and even mid-profit.
+    # =====================================================================
+    st5 = DayState()
+    ce_e3 = Candle(ts(10, 0), 100, 140, 100, 130, 10)
+    pe_e3 = Candle(ts(10, 0), 20, 20, 1, 2, 10)   # implied = 24328 > sp_high -> CE wins, entry 130
+    on_candle_close(ts(10, 0), ce_e3, pe_e3, ATM, sp_high, sp_low, levels, st5, conn, SESSION)
+    check("CE entered for early-exit test", st5.position is not None)
+
+    def fake_ltp_triggering(instrument_key):
+        # ITM1CE has already reached ITM2's level (200) - should force an exit,
+        # regardless of the fact our own ATM CE (currently 133, tiny profit,
+        # far below its own SL/trail/first-line) gives no other reason to exit.
+        return 205.0 if instrument_key == "NSE_FO|ITM1CE" else 0.0
+
+    ce_tiny_move = Candle(ts(10, 3), 130, 135, 128, 133, 10)   # barely above entry, no other exit fires
+    pe_tiny_move = Candle(ts(10, 3), 2, 2, 1, 1.5, 10)
+    on_candle_close(ts(10, 3), ce_tiny_move, pe_tiny_move, ATM, sp_high, sp_low, levels, st5, conn,
+                     SESSION, ltp_fn=fake_ltp_triggering)
+    check("position force-exited when another strike skips ahead of its own next level",
+          st5.position is None)
+    early_exit_row = conn.execute(
+        "SELECT exit_reason FROM orb_trades WHERE session_date=? AND entry_ts=?",
+        (SESSION.isoformat(), ts(10, 0).isoformat())).fetchone()
+    check("exit reason correctly attributes the early exit",
+          "other strike" in early_exit_row[0])
+
+    # Sanity: with a non-triggering ltp_fn, the same tiny move does NOT exit
+    # (proves the check is actually discriminating, not always firing).
+    st6 = DayState()
+    ce_e4 = Candle(ts(10, 30), 100, 140, 100, 130, 10)
+    pe_e4 = Candle(ts(10, 30), 20, 20, 1, 2, 10)
+    on_candle_close(ts(10, 30), ce_e4, pe_e4, ATM, sp_high, sp_low, levels, st6, conn, SESSION)
+    on_candle_close(ts(10, 33), ce_tiny_move, pe_tiny_move, ATM, sp_high, sp_low, levels, st6, conn,
+                     SESSION, ltp_fn=lambda k: 0.0)
+    check("no early exit when no other strike has skipped ahead", st6.position is not None)
 
     # =====================================================================
     # Daily loss cap: two losing trades should lock the machine out
