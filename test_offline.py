@@ -42,11 +42,15 @@ def seed_levels(conn):
     rows = [
         (ATM, "CE", "NSE_FO|ATMCE", 90, 114.6, 47.1, 100, 1000),
         (ATM, "PE", "NSE_FO|ATMPE", 50, 69,   29.15, 60, 1000),
-        (ATM - 50, "CE", "NSE_FO|ITM1CE", 130, 160, 90, 140, 1000),
-        (ATM - 100, "CE", "NSE_FO|ITM2CE", 170, 200, 120, 180, 1000),   # for the early-exit test
-        # ATM+50 strike is ITM for a PUT (strike > spot) -> higher intrinsic value,
-        # so its first-candle high must exceed the ATM PE high (69), mirroring CE.
-        (ATM + 50, "PE", "NSE_FO|ITM1PE", 85, 95, 60, 90, 1000),
+        # Cross-plotted ladder for a CE_WINS (TOP) trade: the trader watches
+        # the PUT's own first-5min LOW at neighboring strikes, not the
+        # CALL's own high (confirmed in chat - this is a cross-plot, not a
+        # same-side extension).
+        (ATM - 50, "PE", "NSE_FO|ITM1CE", 165, 170, 160, 168, 1000),
+        (ATM - 100, "PE", "NSE_FO|ITM2CE", 205, 210, 200, 208, 1000),   # for the early-exit test
+        # Cross-plotted ladder for a PE_WINS (BOTTOM) trade: the CALL's own
+        # first-5min LOW at a neighboring strike.
+        (ATM + 50, "CE", "NSE_FO|ITM1PE", 100, 105, 95, 98, 1000),
     ]
     for strike, side, ikey, o, h, l, c, v in rows:
         conn.execute("INSERT OR REPLACE INTO orb_levels VALUES (?,?,?,?,?,?,?,?,?)",
@@ -331,11 +335,12 @@ def main():
     # polling. This is the actual backtest path a trader would run.
     # =====================================================================
     fake_history = {
-        "NSE_FO|ATMCE": [(9, 21, 130), (9, 24, 133)],
-        "NSE_FO|ATMPE": [(9, 21, 2),   (9, 24, 1.5)],
-        "NSE_FO|ITM1CE": [(9, 21, 150), (9, 24, 205)],   # reaches ITM2's level (200) on 2nd candle
-        "NSE_FO|ITM2CE": [(9, 21, 175), (9, 24, 178)],
-        "NSE_FO|ITM1PE": [(9, 21, 90),  (9, 24, 91)],
+        # 5-min buckets from the 09:15 anchor: 09:20, 09:25, 09:30, ...
+        "NSE_FO|ATMCE": [(9, 25, 130), (9, 30, 133)],
+        "NSE_FO|ATMPE": [(9, 25, 2),   (9, 30, 1.5)],
+        "NSE_FO|ITM1CE": [(9, 25, 150), (9, 30, 205)],   # reaches ITM2's level (200) on 2nd candle
+        "NSE_FO|ITM2CE": [(9, 25, 175), (9, 30, 178)],
+        "NSE_FO|ITM1PE": [(9, 25, 90),  (9, 30, 91)],
     }
 
     def fake_fetch_historical_candles(instrument_key, minutes, day_from, day_to):
@@ -347,7 +352,7 @@ def main():
     replay_row = conn.execute(
         "SELECT entry_price, exit_price, exit_reason, source FROM orb_trades "
         "WHERE session_date=? AND entry_ts=?",
-        (SESSION.isoformat(), ts(9, 21).isoformat())).fetchone()
+        (SESSION.isoformat(), ts(9, 25).isoformat())).fetchone()
     check("run_replay entered the CE trade from mocked historical data",
           replay_row is not None and replay_row[0] == 130)
     check("run_replay's backfilled other-strike check names the triggering strike (24150)",

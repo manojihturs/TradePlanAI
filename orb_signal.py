@@ -5,9 +5,11 @@
 #                                            AND ATM PE close < its 09:15 low
 #   PE_WINS  : the mirror.
 #
-# Entry  = close of the confirmation candle, on the winning ATM contract.
-# Stop   = implied spot closes back inside the SP zone.
-# Trail  = ladder lines of the winning side (each line ~ 1 strike of spot move).
+# Entry  = close of the confirmation candle (5-min), on the winning ATM contract.
+# Stop   = implied spot closes back inside the SP zone (before any profit is locked).
+# Trail  = cross-plotted ladder: the OPPOSITE side's first-5min LOW at every
+#          strike ATM +/- SIGNAL_STRIKES (CE_WINS -> watch PE lows, PE_WINS ->
+#          watch CE lows) - not the winning side's own extension.
 # Limits = MAX_SIGNALS_PER_DAY, MAX_STOPS_PER_DAY, LAST_ENTRY, SQUARE_OFF.
 #
 # Usage:
@@ -16,7 +18,7 @@
 
 import argparse, time as systime
 from datetime import date, datetime, timedelta
-from orb_common import (IST, CANDLE_MINUTES, SIGNAL_STRIKES, STRIKE_GAP,
+from orb_common import (IST, CANDLE_MINUTES, SIGNAL_STRIKES, STRIKE_GAP, ORB_LOCK,
                         LAST_ENTRY, SQUARE_OFF, MAX_SIGNALS_PER_DAY,
                         MAX_STOPS_PER_DAY, QTY, MAX_DAILY_LOSS, SL_POINTS,
                         TSL_TRIGGER_R, TSL_STEP_POINTS, MIN_PROFIT_POINTS,
@@ -39,29 +41,35 @@ def load_day(session_date):
         lv[(strike, side)] = {"key": ikey, "high": fh, "low": flo}
     return atm, sp_high, sp_low, lv
 
-def ladder_lines(levels, atm, winning_side):
-    """Ascending premium levels the winning contract will cross as trend extends.
-    CE wins -> underlying rises -> ATM CE premium climbs toward the first-candle
-    highs of successively deeper ITM calls (lower strikes). PE mirror."""
-    lines = []
-    for i in range(1, SIGNAL_STRIKES + 1):
-        k = atm - i * STRIKE_GAP if winning_side == "CE" else atm + i * STRIKE_GAP
-        rec = levels.get((k, winning_side))
-        if rec:
-            lines.append(rec["high"])
-    return sorted(lines)
-
 def ladder_strikes_ordered(levels, atm, winning_side):
-    """Same ladder as ladder_lines(), but keeping (strike, instrument_key, level)
-    together and ordered ATM-outward (nearest strike first) - needed so we know
-    WHICH contract's own live premium to watch for the early-exit rule below."""
+    """The trader's actual cross-plotted ladder (confirmed in chat):
+      TOP    (CE_WINS, holding the CALL) -> watch the PUT's first-5min LOW
+             at every strike ATM +/- SIGNAL_STRIKES.
+      BOTTOM (PE_WINS, holding the PUT)  -> watch the CALL's first-5min LOW
+             at every strike ATM +/- SIGNAL_STRIKES.
+    In both cases it's the OPPOSITE side's LOW, never the winning side's own
+    high - the ladder is a cross-plot, not a same-side extension. This is
+    what makes it a support/resistance ruler on the contract you're actually
+    holding, rather than a self-referential extrapolation of its own decay.
+    ATM itself is excluded (its opposite-side low is already the entry's own
+    triple-confirmation condition, not a further target). Returns
+    (strike, instrument_key, level) ascending by level."""
+    opposite_side = "PE" if winning_side == "CE" else "CE"
     out = []
-    for i in range(1, SIGNAL_STRIKES + 1):
-        k = atm - i * STRIKE_GAP if winning_side == "CE" else atm + i * STRIKE_GAP
-        rec = levels.get((k, winning_side))
+    for i in range(-SIGNAL_STRIKES, SIGNAL_STRIKES + 1):
+        if i == 0:
+            continue
+        k = atm + i * STRIKE_GAP
+        rec = levels.get((k, opposite_side))
         if rec:
-            out.append({"strike": k, "key": rec["key"], "level": rec["high"]})
+            out.append({"strike": k, "key": rec["key"], "level": rec["low"]})
+    out.sort(key=lambda d: d["level"])
     return out
+
+def ladder_lines(levels, atm, winning_side):
+    """Just the ascending level values from ladder_strikes_ordered() - the
+    numbers the traded contract's own premium is compared against."""
+    return [d["level"] for d in ladder_strikes_ordered(levels, atm, winning_side)]
 
 def build_watch_pairs(levels, atm, winning_side):
     """Early-exit rule: for each strike in the ladder (ITM1..ITM6 or OTM1..OTM6),
@@ -331,7 +339,7 @@ def run_replay(session_date):
 
     ce_series = sorted(hist_by_key.get(ce_key, {}).items())
     pe_map = hist_by_key.get(pe_key, {})
-    cutoff_time = datetime.strptime("09:21", "%H:%M").time()
+    cutoff_time = ORB_LOCK   # 09:20 - first candle bucket after the opening range itself
 
     st, conn = DayState(), db()
     for ts, ce_close in ce_series:

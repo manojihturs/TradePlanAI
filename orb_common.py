@@ -19,7 +19,7 @@ SPOT_KEY       = "NSE_INDEX|Nifty 50"
 STRIKE_GAP     = 50
 NUM_STRIKES    = 6      # ladder = ATM +/- 6 (ITM6..ATM..OTM6, per the trader's own chart setup)
 SIGNAL_STRIKES = 6      # all +/- 6 strikes gate signals and the other-strike early-exit rule
-CANDLE_MINUTES = 3      # confirmation candle size (your charts are 3-min)
+CANDLE_MINUTES = 5      # confirmation candle size (trader confirmed: all trades on 5-min)
 
 IST         = ZoneInfo("Asia/Kolkata")
 MARKET_OPEN = time(9, 15)
