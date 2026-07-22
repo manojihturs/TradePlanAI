@@ -259,10 +259,17 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
             "%s WINS: implied spot %.1f closed %s (triple confirmation) - %s and %s. "
             "Bought ATM %s at %.2f." % (side, implied_spot, direction, ce_note, pe_note, side, entry)
         )
+        # Only levels AHEAD of entry are real targets. The cross-plotted ladder
+        # spans the opposite side's low across the full +/- SIGNAL_STRIKES
+        # range, which naturally includes reference values already below the
+        # entry premium (different strike, unrelated magnitude) - counting
+        # those as "crossed" the instant the position opens is noise, not
+        # trend progress.
+        future_lines = [x for x in ladder_lines(levels, atm, side) if x > entry]
         st.position = {
             "side": side, "entry": entry, "ts": ts.isoformat(),
             "trail": max(0.0, entry - SL_POINTS),   # initial SL: fixed rupee risk budget
-            "lines": ladder_lines(levels, atm, side),
+            "lines": future_lines,
             "watch_pairs": build_watch_pairs(levels, atm, side),
             "crossed": 0,
             "entry_note": entry_note,

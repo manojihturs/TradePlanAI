@@ -48,6 +48,10 @@ def seed_levels(conn):
         # same-side extension).
         (ATM - 50, "PE", "NSE_FO|ITM1CE", 165, 170, 160, 168, 1000),
         (ATM - 100, "PE", "NSE_FO|ITM2CE", 205, 210, 200, 208, 1000),   # for the early-exit test
+        # A cross-plotted strike whose own low (50) sits BELOW where CE will
+        # enter (130) - a real strike, unrelated in magnitude, that must NOT
+        # be counted as an already-crossed target the instant the position opens.
+        (ATM + 150, "PE", "NSE_FO|PE_BELOW_ENTRY", 45, 55, 50, 52, 1000),
         # Cross-plotted ladder for a PE_WINS (BOTTOM) trade: the CALL's own
         # first-5min LOW at a neighboring strike.
         (ATM + 50, "CE", "NSE_FO|ITM1PE", 100, 105, 95, 98, 1000),
@@ -84,11 +88,14 @@ def main():
         levels[(strike, side)] = {"key": ikey, "high": fh, "low": flo}
 
     lines = ladder_lines(levels, ATM, "CE")
-    check("ladder_lines returns ITM1+ITM2 CE highs for CE side", lines == [160, 200])
+    check("ladder_lines cross-plots PE lows ascending (50, 160, 200)", lines == [50, 160, 200])
 
     watch_pairs = build_watch_pairs(levels, ATM, "CE")
-    check("watch_pairs pairs ITM1's strike+key with ITM2's level (200)",
-          watch_pairs == [{"strike": ATM - 50, "key": "NSE_FO|ITM1CE", "next_level": 200}])
+    check("watch_pairs chains the full cross-plotted ladder in order",
+          watch_pairs == [
+              {"strike": ATM + 150, "key": "NSE_FO|PE_BELOW_ENTRY", "next_level": 160},
+              {"strike": ATM - 50, "key": "NSE_FO|ITM1CE", "next_level": 200},
+          ])
 
     # --- NEUTRAL: implied spot inside zone -> no trade
     st = DayState()
@@ -185,6 +192,14 @@ def main():
     pe_e2 = Candle(ts(9, 30), 20, 20, 1, 2, 10)          # implied = 24200+130-2=24328 > sp_high -> CE wins
     on_candle_close(ts(9, 30), ce_e2, pe_e2, ATM, sp_high, sp_low, levels, st4, conn, SESSION)
     check("CE entered for profit-lock-only test", st4.position is not None)
+    # Regression check for the bug found live: the cross-plotted ladder
+    # includes a strike (level 50) whose value sits BELOW this entry (130).
+    # It must be excluded from "lines" entirely, not trivially "crossed" the
+    # instant the position opens.
+    check("below-entry ladder level (50) is excluded from future targets",
+          50 not in st4.position["lines"] and st4.position["lines"] == [160, 200])
+    check("crossed count is 0 right at entry, not incremented by the excluded level",
+          st4.position["crossed"] == 0)
     # move up exactly past 1R but stay well below the first ladder line (160)
     just_past_1r = 130 + SL_POINTS + 0.5
     ce_1r = Candle(ts(9, 33), 130, just_past_1r + 1, 128, just_past_1r, 10)
