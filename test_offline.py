@@ -24,10 +24,10 @@ if os.path.exists(orb_journal.JOURNAL_PATH):
     os.remove(orb_journal.JOURNAL_PATH)
 
 from orb_common import (IST, Candle, db, nearest_strike, SL_POINTS, MAX_DAILY_LOSS, QTY,
-                        MIN_PROFIT_POINTS, MIN_ENTRY_MARGIN_POINTS)
+                        MIN_PROFIT_POINTS, MIN_ENTRY_MARGIN_POINTS, MIN_COMPETITOR_DISTANCE_POINTS)
 import orb_signal
 from orb_signal import (DayState, on_candle_close, ladder_lines, build_watch_pairs,
-                        run_replay, CANDLE_MINUTES)
+                        competitor_reference, run_replay, CANDLE_MINUTES)
 from orb_auto import should_run_today_now, next_market_open
 from datetime import timedelta
 
@@ -336,6 +336,33 @@ def main():
     pe_nc = Candle(ts(11, 33), 2, 2, 1.5, 1.8, 10)   # stays above 1.0
     on_candle_close(ts(11, 33), ce_nc, pe_nc, ATM, sp_high, sp_low, levels, st8, conn, SESSION)
     check("no competitor exit when PE stays above its level", st8.position is not None)
+
+    # =====================================================================
+    # MIN_COMPETITOR_DISTANCE_POINTS floor: found by inspecting raw strike
+    # data (2026-07-20/21) that the raw captured competitor level can sit
+    # trivially close to the competitor's own ATM 9:15 range, making it
+    # cross in 1-2 candles. Direct unit test of competitor_reference() with
+    # a custom levels dict where the raw level (25) is EASIER to reach than
+    # the floor (atm_pe_low - 20 = 9.15) - the floor must win (be used),
+    # pushing the effective level down to 9.15, not left at the raw 25.
+    # =====================================================================
+    floor_levels = {
+        (24200, "CE"): {"key": "FLOOR_ATMCE", "high": 114.6, "low": 47.1},
+        (24200, "PE"): {"key": "FLOOR_ATMPE", "high": 69.0, "low": 29.15},
+        (24150, "PE"): {"key": "FLOOR_K1PE", "high": 999, "low": 160.0},   # feeds our own target1
+        (24150, "CE"): {"key": "FLOOR_K1CE", "high": 25.0, "low": 999},   # raw competitor level (too close)
+    }
+    k, level = competitor_reference(floor_levels, 24200, "CE", entry=130)
+    expected_floor = 29.15 - MIN_COMPETITOR_DISTANCE_POINTS
+    check("competitor floor overrides a too-close raw level (25 -> %.2f)" % expected_floor,
+          k == 24150 and abs(level - expected_floor) < 1e-9 and expected_floor < 25)
+
+    # Sanity: when the raw level is ALREADY stricter than the floor, it's
+    # left alone (the floor is a minimum, not a fixed override).
+    floor_levels[(24150, "CE")] = {"key": "FLOOR_K1CE_STRICT", "high": 2.0, "low": 999}
+    k2, level2 = competitor_reference(floor_levels, 24200, "CE", entry=130)
+    check("raw level already stricter than the floor is left unchanged (2.0)",
+          k2 == 24150 and abs(level2 - 2.0) < 1e-9)
 
     # =====================================================================
     # Daily loss cap: two losing trades should lock the machine out

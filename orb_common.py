@@ -54,6 +54,17 @@ MIN_PROFIT_POINTS = float(os.environ.get("ORB_MIN_PROFIT_POINTS", "3"))
 # CE and PE (see chat: CE showed a clean effect, PE showed the opposite on a
 # small sample - treated as noise pending more data, not a real asymmetry).
 MIN_ENTRY_MARGIN_POINTS = float(os.environ.get("ORB_MIN_ENTRY_MARGIN", "5"))
+# Minimum distance the competitor's own live price must travel PAST its own
+# 9:15 extreme before the competitor-exit rule can fire. Found by inspecting
+# raw strike data: the competitor threshold (competitor_reference()) is a
+# static number pulled from a strike/side pair that can land arbitrarily
+# close to where the competitor's ATM contract already sits (e.g. below its
+# own 9:15 low), so a fast but ordinary decay crosses it in 1-2 candles -
+# this was the actual mechanism behind PE trades exiting in an average of
+# 9 minutes vs CE's 84 (see chat, raw strike numbers for 2026-07-20/21).
+# This floor doesn't replace the captured level - it only makes it AT LEAST
+# this far from the competitor's own morning range, whichever is stricter.
+MIN_COMPETITOR_DISTANCE_POINTS = float(os.environ.get("ORB_MIN_COMPETITOR_DISTANCE", "20"))
 
 _HERE   = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(_HERE, "orb_levels.db")

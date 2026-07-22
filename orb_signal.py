@@ -22,7 +22,7 @@ from orb_common import (IST, CANDLE_MINUTES, SIGNAL_STRIKES, STRIKE_GAP, ORB_LOC
                         LAST_ENTRY, SQUARE_OFF, MAX_SIGNALS_PER_DAY,
                         MAX_STOPS_PER_DAY, QTY, MAX_DAILY_LOSS, SL_POINTS,
                         TSL_TRIGGER_R, MIN_PROFIT_POINTS,
-                        MIN_ENTRY_MARGIN_POINTS,
+                        MIN_ENTRY_MARGIN_POINTS, MIN_COMPETITOR_DISTANCE_POINTS,
                         APP_NAME, SERVER_NAME, get_ltp,
                         fetch_intraday_candles, fetch_historical_candles,
                         resample, db, alert, write_state)
@@ -110,9 +110,22 @@ def competitor_reference(levels, atm, our_side, entry):
       BOTTOM (holding PE, ladder = CE-low @ K) -> competitor (CE) reference
              = PE-high @ K
     In both cases that's levels[(K, our_side)]["high"] - reusing data already
-    captured, no other-strike scanning. If the competitor's live premium
-    falls to/through this level before our own target1 is hit, market
-    leadership has flipped to the competitor - exit now.
+    captured, no other-strike scanning. The actual check (see on_candle_close)
+    is competitor_close <= level for BOTH sides - the competitor must always
+    fall (this is the behavior already validated against real backtest data;
+    "the losing side's premium decays as the winning side's move continues,
+    regardless of which side is winning" - not a rise for one side and a
+    fall for the other). If the competitor's live premium falls to/through
+    this level before our own target1 is hit, market leadership has flipped
+    to the competitor - exit now.
+
+    MIN_COMPETITOR_DISTANCE_POINTS floor: the raw captured level above can
+    land arbitrarily close to the competitor's own ATM 9:15 range (found by
+    inspecting raw strike data - this was why PE trades exited in ~9 min on
+    average). Since the competitor must always fall to trigger, the floor
+    always pushes the level DOWN (stricter = farther below where the
+    competitor already sits) relative to the competitor's own 9:15 low,
+    whichever of raw/floor is lower (harder to reach).
     Returns (K, level) or (None, None) if there's no real target ahead of entry."""
     ladder = [d for d in ladder_strikes_ordered(levels, atm, our_side) if d["level"] > entry]
     if not ladder:
@@ -121,7 +134,15 @@ def competitor_reference(levels, atm, our_side, entry):
     rec = levels.get((k, our_side))
     if not rec:
         return None, None
-    return k, rec["high"]
+    raw_level = rec["high"]
+
+    competitor_side = "PE" if our_side == "CE" else "CE"
+    atm_competitor = levels.get((atm, competitor_side))
+    if atm_competitor:
+        level = min(raw_level, atm_competitor["low"] - MIN_COMPETITOR_DISTANCE_POINTS)
+    else:
+        level = raw_level
+    return k, level
 
 class DayState:
     def __init__(self):
