@@ -13,7 +13,8 @@ from flask import Flask, jsonify, render_template_string, request
 from orb_common import (IST, DB_PATH, STATE_PATH, INITIAL_CAPITAL, MAX_DAILY_LOSS,
                         QTY, LOT_SIZE, LOTS, APP_NAME, SERVER_NAME, db, alert,
                         get_spot_ltp, get_ltp, get_nearest_expiry,
-                        resolve_future_instrument_key)
+                        resolve_future_instrument_key,
+                        get_settings, set_setting, is_competitor_exit_enabled)
 
 app = Flask(__name__)
 
@@ -63,6 +64,15 @@ PAGE = """
     <h3>Telegram</h3>
     <button id="tg-test-btn" onclick="sendTestMessage()">Send Test Message</button>
     <span id="tg-status"></span>
+  </section>
+
+  <section>
+    <h3>Competitor Check</h3>
+    <button id="comp-toggle-btn" onclick="toggleCompetitor()">...</button>
+    <span id="comp-status"></span>
+    <div class="why" style="margin-top:6px">When ON, an open position exits immediately if the
+      competing contract falls to its own reference level before your target1 is hit. When OFF,
+      this check is skipped entirely - trades only exit via target, SL/TSL, or zone re-entry.</div>
   </section>
 
   <section>
@@ -157,8 +167,39 @@ async function sendTestMessage() {
   btn.disabled = false;
 }
 
+function renderCompetitorButton(enabled) {
+  const btn = document.getElementById('comp-toggle-btn');
+  const status = document.getElementById('comp-status');
+  btn.textContent = enabled ? 'ON — click to turn OFF' : 'OFF — click to turn ON';
+  btn.style.background = enabled ? '#16a34a' : '#4b5563';
+  status.textContent = enabled ? 'Considered on every open position' : 'Not considered at all';
+  status.className = enabled ? 'pos' : 'neu';
+}
+
+async function refreshCompetitorToggle() {
+  try {
+    const r = await fetch('/api/settings');
+    const d = await r.json();
+    renderCompetitorButton(!!d.competitor_exit_enabled);
+  } catch (e) { /* leave as-is on transient failure */ }
+}
+
+async function toggleCompetitor() {
+  const btn = document.getElementById('comp-toggle-btn');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/toggle_competitor', { method: 'POST' });
+    const d = await r.json();
+    renderCompetitorButton(!!d.competitor_exit_enabled);
+  } catch (e) {
+    document.getElementById('comp-status').textContent = 'Failed: ' + e;
+  }
+  btn.disabled = false;
+}
+
 refresh();
 refreshLive();
+refreshCompetitorToggle();
 setInterval(refresh, 5000);
 setInterval(refreshLive, 15000);
 </script>
@@ -206,6 +247,18 @@ def test_telegram():
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.route("/api/settings")
+def settings():
+    return jsonify(get_settings())
+
+@app.route("/api/toggle_competitor", methods=["POST"])
+def toggle_competitor():
+    new_state = not is_competitor_exit_enabled()
+    set_setting("competitor_exit_enabled", new_state)
+    alert("Competitor Check toggled %s from the %s@%s dashboard"
+          % ("ON" if new_state else "OFF", APP_NAME, SERVER_NAME))
+    return jsonify({"competitor_exit_enabled": new_state})
 
 @app.route("/api/live")
 def live():

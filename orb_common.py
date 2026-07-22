@@ -71,6 +71,33 @@ DB_PATH = os.path.join(_HERE, "orb_levels.db")
 MASTER_CACHE = os.path.join(_HERE, "nse_master_cache.json")
 LOG_DIR = os.path.join(_HERE, "logs")
 STATE_PATH = os.path.join(_HERE, "orb_state.json")
+SETTINGS_PATH = os.path.join(_HERE, "orb_settings.json")
+
+DEFAULT_SETTINGS = {"competitor_exit_enabled": True}
+
+def get_settings():
+    """Live, cross-process toggles (e.g. the dashboard's Competitor Check
+    button). orb_ui.py writes this file; orb_signal.py reads it fresh on
+    every candle so a toggle flipped from the UI takes effect on the
+    already-running orb_auto.py process without a restart."""
+    settings = dict(DEFAULT_SETTINGS)
+    try:
+        if os.path.exists(SETTINGS_PATH):
+            with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+                settings.update(json.load(f))
+    except Exception:
+        pass   # corrupt/partial file - fall back to defaults rather than crash
+    return settings
+
+def set_setting(key, value):
+    settings = get_settings()
+    settings[key] = value
+    with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+        json.dump(settings, f)
+    return settings
+
+def is_competitor_exit_enabled():
+    return bool(get_settings().get("competitor_exit_enabled", True))
 
 API_BASE = "https://api.upstox.com"
 INSTRUMENT_MASTER_URL = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"

@@ -23,7 +23,7 @@ from orb_common import (IST, CANDLE_MINUTES, SIGNAL_STRIKES, STRIKE_GAP, ORB_LOC
                         MAX_STOPS_PER_DAY, QTY, MAX_DAILY_LOSS, SL_POINTS,
                         TSL_TRIGGER_R, MIN_PROFIT_POINTS,
                         MIN_ENTRY_MARGIN_POINTS, MIN_COMPETITOR_DISTANCE_POINTS,
-                        APP_NAME, SERVER_NAME, get_ltp,
+                        APP_NAME, SERVER_NAME, get_ltp, is_competitor_exit_enabled,
                         fetch_intraday_candles, fetch_historical_candles,
                         resample, db, alert, write_state)
 import orb_journal
@@ -206,7 +206,10 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
         # (see competitor_reference()). If the competitor's live price has
         # fallen to/through that level BEFORE our own target1 is hit, market
         # leadership has flipped - exit now, don't wait for target1 or SL.
-        if not exit_reason and p.get("lines") and p.get("competitor_level") is not None:
+        # Toggleable from the dashboard (orb_ui.py) - read fresh every candle
+        # so a live toggle takes effect on the running process immediately.
+        if (not exit_reason and is_competitor_exit_enabled()
+                and p.get("lines") and p.get("competitor_level") is not None):
             competitor_close = pe_c.close if p["side"] == "CE" else ce_c.close
             if competitor_close <= p["competitor_level"]:
                 exit_reason = ("competitor %s reached %.2f (its level %.2f at strike %d) before "

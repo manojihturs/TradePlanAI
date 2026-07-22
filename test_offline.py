@@ -23,8 +23,15 @@ orb_journal.JOURNAL_PATH = os.path.join(tempfile.gettempdir(), "orb_test_journal
 if os.path.exists(orb_journal.JOURNAL_PATH):
     os.remove(orb_journal.JOURNAL_PATH)
 
+# Never let the offline suite flip the REAL competitor-check toggle that
+# orb_ui.py/orb_auto.py share.
+orb_common.SETTINGS_PATH = os.path.join(tempfile.gettempdir(), "orb_test_settings.json")
+if os.path.exists(orb_common.SETTINGS_PATH):
+    os.remove(orb_common.SETTINGS_PATH)
+
 from orb_common import (IST, Candle, db, nearest_strike, SL_POINTS, MAX_DAILY_LOSS, QTY,
-                        MIN_PROFIT_POINTS, MIN_ENTRY_MARGIN_POINTS, MIN_COMPETITOR_DISTANCE_POINTS)
+                        MIN_PROFIT_POINTS, MIN_ENTRY_MARGIN_POINTS, MIN_COMPETITOR_DISTANCE_POINTS,
+                        set_setting, is_competitor_exit_enabled)
 import orb_signal
 from orb_signal import (DayState, on_candle_close, ladder_lines, build_watch_pairs,
                         competitor_reference, run_replay, CANDLE_MINUTES)
@@ -363,6 +370,37 @@ def main():
     k2, level2 = competitor_reference(floor_levels, 24200, "CE", entry=130)
     check("raw level already stricter than the floor is left unchanged (2.0)",
           k2 == 24150 and abs(level2 - 2.0) < 1e-9)
+
+    # =====================================================================
+    # Competitor Check toggle (dashboard button): OFF must skip the rule
+    # entirely, even when the competitor's price would otherwise trigger it.
+    # =====================================================================
+    check("competitor check defaults to enabled", is_competitor_exit_enabled() is True)
+    set_setting("competitor_exit_enabled", False)
+    check("toggle correctly reads back as disabled", is_competitor_exit_enabled() is False)
+
+    st_toggle = DayState()
+    ce_te = Candle(ts(12, 40), 100, 140, 100, 130, 10)
+    pe_te = Candle(ts(12, 40), 20, 20, 1, 2, 10)   # implied = 24328 > sp_high -> CE wins, entry 130
+    on_candle_close(ts(12, 40), ce_te, pe_te, ATM, sp_high, sp_low, levels, st_toggle, conn, SESSION)
+    check("CE entered for toggle test", st_toggle.position is not None)
+
+    # Same trigger candle as the earlier competitor test (PE closes at 0.9,
+    # <= the seeded 1.0 competitor level) - with the toggle OFF, this must
+    # NOT exit the position.
+    ce_te2 = Candle(ts(12, 43), 130, 135, 128, 132, 10)
+    pe_te2 = Candle(ts(12, 43), 2, 2, 0.8, 0.9, 10)
+    on_candle_close(ts(12, 43), ce_te2, pe_te2, ATM, sp_high, sp_low, levels, st_toggle, conn, SESSION)
+    check("competitor breach is IGNORED while the toggle is OFF",
+          st_toggle.position is not None)
+
+    # Flip it back ON - the identical candle now closes it.
+    set_setting("competitor_exit_enabled", True)
+    ce_te3 = Candle(ts(12, 46), 132, 135, 128, 132, 10)
+    pe_te3 = Candle(ts(12, 46), 0.9, 0.9, 0.7, 0.85, 10)
+    on_candle_close(ts(12, 46), ce_te3, pe_te3, ATM, sp_high, sp_low, levels, st_toggle, conn, SESSION)
+    check("competitor breach fires again once the toggle is back ON",
+          st_toggle.position is None)
 
     # =====================================================================
     # Daily loss cap: two losing trades should lock the machine out

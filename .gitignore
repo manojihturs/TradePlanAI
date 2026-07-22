@@ -3,6 +3,7 @@ __pycache__/
 orb_levels.db
 nse_master_cache.json
 orb_state.json
+orb_settings.json
 logs/
 .env
 trade_journal.xlsx
