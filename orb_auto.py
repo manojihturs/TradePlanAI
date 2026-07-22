@@ -45,6 +45,18 @@ def next_market_open(now):
     return target
 
 
+def should_run_today_now(now, last_run_date):
+    """True if today is a weekday, we're currently inside the capture-to-
+    square-off window, and today's session hasn't been run yet this process
+    (covers starting the app late, e.g. at 09:57 instead of 09:21)."""
+    if now.weekday() >= 5:
+        return False
+    if last_run_date == now.date():
+        return False
+    open_from = datetime.combine(now.date(), ORB_LOCK, tzinfo=IST) + timedelta(minutes=1)
+    return open_from <= now < datetime.combine(now.date(), SQUARE_OFF, tzinfo=IST)
+
+
 def run_one_day():
     now = datetime.now(IST)
     session_date = now.date()
@@ -73,9 +85,19 @@ def run_one_day():
 def main():
     require_telegram_config()   # Telegram alerts are mandatory - fail fast if missing
     setup_logging()
-    alert("orb_auto started - fully automatic mode. Waiting for next market open...")
+    alert("orb_auto started - fully automatic mode.")
+    last_run_date = None
     while True:
         now = datetime.now(IST)
+
+        if should_run_today_now(now, last_run_date):
+            alert("AUTO: market is open now (%s) and today hasn't run yet - starting immediately "
+                  "instead of waiting for tomorrow." % now.strftime("%H:%M"))
+            run_one_day()
+            last_run_date = now.date()
+            systime.sleep(60)
+            continue
+
         wake = next_market_open(now)
         wait_s = (wake - now).total_seconds()
         if wait_s > 0:
@@ -83,6 +105,7 @@ def main():
             systime.sleep(min(wait_s, 3600))
             continue  # re-check in <=1hr increments so long sleeps are interruptible/log-friendly
         run_one_day()
+        last_run_date = now.date()
         systime.sleep(60)  # avoid tight loop if something returns instantly
 
 

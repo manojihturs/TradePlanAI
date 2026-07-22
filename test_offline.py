@@ -25,6 +25,7 @@ if os.path.exists(orb_journal.JOURNAL_PATH):
 
 from orb_common import IST, Candle, db, nearest_strike, SL_POINTS, MAX_DAILY_LOSS, QTY
 from orb_signal import DayState, on_candle_close, ladder_lines
+from orb_auto import should_run_today_now, next_market_open
 
 SESSION = date(2026, 7, 21)
 ATM = 24200
@@ -188,6 +189,32 @@ def main():
         print("[NOTE] candle-close SL overshot the Rs %.0f/trade risk budget by Rs %.2f "
               "in this scenario - stops are evaluated on candle close, not intrabar."
               % (per_trade_budget, abs(actual_worst) - per_trade_budget))
+
+    # =====================================================================
+    # orb_auto: starting late (after 9:21) on a trading day must run TODAY,
+    # not silently skip to tomorrow (this was a real bug found live on
+    # 2026-07-22: starting at 09:57 scheduled the next run for 09:23 the
+    # following day instead of capturing immediately).
+    # =====================================================================
+    tuesday_late_start = datetime(2026, 7, 21, 9, 57, tzinfo=IST)   # 2026-07-21 is a Tuesday
+    check("late start (09:57, past 09:21) runs today immediately",
+          should_run_today_now(tuesday_late_start, None) is True)
+
+    tuesday_before_open = datetime(2026, 7, 21, 9, 0, tzinfo=IST)
+    check("before 09:21 does not run immediately (normal sleep-until-open path)",
+          should_run_today_now(tuesday_before_open, None) is False)
+
+    tuesday_after_close = datetime(2026, 7, 21, 16, 0, tzinfo=IST)
+    check("after square-off does not trigger an immediate run",
+          should_run_today_now(tuesday_after_close, None) is False)
+
+    tuesday_already_ran = datetime(2026, 7, 21, 10, 0, tzinfo=IST)
+    check("does not re-run today if last_run_date is already today",
+          should_run_today_now(tuesday_already_ran, date(2026, 7, 21)) is False)
+
+    saturday = datetime(2026, 7, 25, 10, 0, tzinfo=IST)
+    check("weekend never triggers an immediate run",
+          should_run_today_now(saturday, None) is False)
 
     print("\nAll offline logic checks passed.")
 
