@@ -19,8 +19,9 @@ from datetime import date, datetime
 from orb_common import (IST, CANDLE_MINUTES, SIGNAL_STRIKES, STRIKE_GAP,
                         LAST_ENTRY, SQUARE_OFF, MAX_SIGNALS_PER_DAY,
                         MAX_STOPS_PER_DAY, QTY, MAX_DAILY_LOSS, SL_POINTS,
-                        TSL_TRIGGER_R, TSL_STEP_POINTS, fetch_intraday_candles,
-                        fetch_historical_candles, resample, db, alert, write_state)
+                        TSL_TRIGGER_R, TSL_STEP_POINTS, APP_NAME, SERVER_NAME,
+                        fetch_intraday_candles, fetch_historical_candles,
+                        resample, db, alert, write_state)
 
 def load_day(session_date):
     conn = db()
@@ -58,6 +59,7 @@ class DayState:
 
 def _snapshot(session_date, atm, sp_high, sp_low, st, note=""):
     write_state(
+        app_name=APP_NAME, server=SERVER_NAME,
         session_date=str(session_date), atm=atm, sp_low=sp_low, sp_high=sp_high,
         state=("LOCKED" if st.locked else ("IN_TRADE" if st.position else "NEUTRAL")),
         position=st.position, signals=st.signals, stops=st.stops,

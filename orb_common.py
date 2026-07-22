@@ -24,6 +24,9 @@ SQUARE_OFF  = time(15, 15)
 MAX_SIGNALS_PER_DAY = 2
 MAX_STOPS_PER_DAY   = 2
 
+APP_NAME    = os.environ.get("ORB_APP_NAME", "tradePlan_local")
+SERVER_NAME = os.environ.get("ORB_SERVER_NAME", "local")
+
 # ---- Capital / risk / sizing -----------------------------------------
 LOT_SIZE         = int(os.environ.get("ORB_LOT_SIZE", "65"))
 LOTS             = int(os.environ.get("ORB_LOTS", "1"))
@@ -243,12 +246,13 @@ def db():
 
 def alert(msg):
     stamp = datetime.now(IST).strftime("%H:%M:%S")
-    print("[%s] %s" % (stamp, msg), flush=True)
+    tagged = "[%s@%s] %s" % (APP_NAME, SERVER_NAME, msg)
+    print("[%s] %s" % (stamp, tagged), flush=True)
     if _logger is not None:
-        _logger.info(msg)
+        _logger.info(tagged)
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         try:
             requests.post("https://api.telegram.org/bot%s/sendMessage" % TELEGRAM_BOT_TOKEN,
-                          json={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=10)
+                          json={"chat_id": TELEGRAM_CHAT_ID, "text": tagged}, timeout=10)
         except Exception as e:
             print("  (telegram failed: %s)" % e)

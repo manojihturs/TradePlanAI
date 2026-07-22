@@ -71,6 +71,7 @@ async function refresh() {
   const pnl = st.daily_pnl_rupees ?? 0;
   const pnlClass = pnl > 0 ? 'pos' : (pnl < 0 ? 'neg' : 'neu');
   document.getElementById('cards').innerHTML = `
+    <div class="card"><div class="label">App / Server</div><div class="value" style="font-size:16px">${st.app_name || '-'} @ ${st.server || '-'}</div></div>
     <div class="card"><div class="label">Status</div><div class="value">
       <span class="badge ${st.state || 'NEUTRAL'}">${st.state || 'NEUTRAL'}</span></div></div>
     <div class="card"><div class="label">Capital</div><div class="value">Rs ${d.capital}</div></div>
