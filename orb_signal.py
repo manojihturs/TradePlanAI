@@ -22,6 +22,7 @@ from orb_common import (IST, CANDLE_MINUTES, SIGNAL_STRIKES, STRIKE_GAP,
                         TSL_TRIGGER_R, TSL_STEP_POINTS, APP_NAME, SERVER_NAME,
                         fetch_intraday_candles, fetch_historical_candles,
                         resample, db, alert, write_state)
+import orb_journal
 
 def load_day(session_date):
     conn = db()
@@ -85,7 +86,7 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
         elif p["side"] == "PE" and implied_spot > sp_low:
             exit_reason = "spot back in zone"
         elif t >= SQUARE_OFF:
-            exit_reason = "square off 15:15"
+            exit_reason = "square off 15:15 (forced flat)"
         else:
             if p["lines"] and px >= p["lines"][0]:
                 crossed = p["lines"].pop(0)
@@ -103,16 +104,38 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
         if exit_reason:
             pnl_pts = px - p["entry"]
             pnl_rupees = pnl_pts * QTY
-            conn.execute("INSERT INTO orb_trades VALUES (?,?,?,?,?,?,?,?,?,?)",
+
+            if pnl_pts > 0:
+                exit_note = ("Profit: %s premium ran from %.2f to %.2f (+%.2f pts, %d ladder "
+                             "line(s) crossed) before %s." %
+                             (p["side"], p["entry"], px, pnl_pts, p["crossed"], exit_reason))
+            elif pnl_pts < 0:
+                exit_note = ("Loss: %s premium fell from %.2f to %.2f (%.2f pts) - %s. "
+                             "SL/TSL was at %.2f when closed." %
+                             (p["side"], p["entry"], px, pnl_pts, exit_reason, p["trail"]))
+            else:
+                exit_note = ("Breakeven: exited flat at %.2f via %s, no gain/loss." % (px, exit_reason))
+
+            conn.execute("INSERT INTO orb_trades VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                          (session_date.isoformat(), p["ts"], p["side"],
                           atm, p["entry"], ts.isoformat(), px, exit_reason,
-                          p["crossed"], pnl_pts))
+                          p["crossed"], pnl_pts, p["entry_note"], exit_note))
             conn.commit()
             st.daily_pnl_rupees += pnl_rupees
             alert("EXIT %s @ %.2f (%s) | PnL %.2f pts (Rs %.2f, qty %d) | lines crossed %d | "
                   "day PnL Rs %.2f"
                   % (p["side"], px, exit_reason, pnl_pts, pnl_rupees, QTY, p["crossed"],
                      st.daily_pnl_rupees))
+            try:
+                orb_journal.append_trade(session_date, {
+                    "entry_ts": p["ts"], "exit_ts": ts.isoformat(), "side": p["side"],
+                    "strike": atm, "qty": QTY, "entry_price": p["entry"], "exit_price": px,
+                    "pnl_points": round(pnl_pts, 2), "pnl_rupees": round(pnl_rupees, 2),
+                    "lines_crossed": p["crossed"], "exit_reason": exit_reason,
+                    "why_entered": p["entry_note"], "why_pnl": exit_note,
+                })
+            except Exception as e:
+                alert("journal write failed: %s" % e)
             if pnl_pts < 0:
                 st.stops += 1
             if st.daily_pnl_rupees <= -MAX_DAILY_LOSS:
@@ -141,11 +164,23 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
     if ce_wins or pe_wins:
         side  = "CE" if ce_wins else "PE"
         entry = ce_c.close if ce_wins else pe_c.close
+        direction = "above SP High %d" % sp_high if ce_wins else "below SP Low %d" % sp_low
+        if ce_wins:
+            ce_note = "ATM CE closed above its 9:15 high %.2f (at %.2f)" % (atm_ce["high"], ce_c.close)
+            pe_note = "ATM PE closed below its 9:15 low %.2f (at %.2f)" % (atm_pe["low"], pe_c.close)
+        else:
+            ce_note = "ATM CE closed below its 9:15 low %.2f (at %.2f)" % (atm_ce["low"], ce_c.close)
+            pe_note = "ATM PE closed above its 9:15 high %.2f (at %.2f)" % (atm_pe["high"], pe_c.close)
+        entry_note = (
+            "%s WINS: implied spot %.1f closed %s (triple confirmation) - %s and %s. "
+            "Bought ATM %s at %.2f." % (side, implied_spot, direction, ce_note, pe_note, side, entry)
+        )
         st.position = {
             "side": side, "entry": entry, "ts": ts.isoformat(),
             "trail": max(0.0, entry - SL_POINTS),   # initial SL: fixed rupee risk budget
             "lines": ladder_lines(levels, atm, side),
             "crossed": 0,
+            "entry_note": entry_note,
         }
         st.signals += 1
         alert("ENTRY: %s WINS | buy ATM %s x%d @ %.2f | implied spot %.1f | zone %d-%d | "

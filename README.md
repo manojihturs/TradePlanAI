@@ -9,7 +9,8 @@ Automates a manual Nifty options opening-range strategy:
 - **Fully automatic**: no trade-approval prompts. `orb_auto.py` runs unattended day after day.
 - **Telegram notifications**: mandatory for live/auto mode — required on every ENTRY and EXIT.
 - **Logging**: every alert is written to a daily file under `logs/`, in addition to Telegram + console.
-- **Dashboard**: `orb_ui.py` serves a local live status page (capital, day PnL, open position, trade history).
+- **Dashboard**: `orb_ui.py` serves a local live status page (capital, day PnL, open position, trade history, live Nifty spot/future LTP, a Telegram test-message button).
+- **Trade journal**: every completed trade is written both to SQLite (`orb_trades`, with `entry_note`/`exit_note` explaining why it was taken and why it made/lost money) and to a per-day sheet in `trade_journal.xlsx`.
 
 Scope: **Nifty only** for now.
 
@@ -21,17 +22,26 @@ Scope: **Nifty only** for now.
 - `orb_auto.py` — fully automatic daily runner: resolves expiry+ATM, captures, runs the live loop,
   sleeps until the next trading day, repeats. This is the only script you need to run once you've
   validated the strategy via replay.
-- `orb_ui.py` — Flask dashboard (`http://localhost:8765`) reading `orb_state.json` + the trades DB.
-- `test_offline.py` — network-free regression test of the parity math and state machine.
+- `orb_ui.py` — Flask dashboard (`http://localhost:8765`) reading `orb_state.json` + the trades DB,
+  plus live Nifty spot/future LTP and a Telegram test-message button.
+- `orb_journal.py` — writes each completed trade to a per-day sheet in `trade_journal.xlsx`.
+- `test_offline.py` — network-free regression test of the parity math, state machine (CE_WINS,
+  PE_WINS, breakeven-lock TSL, daily-loss lockout), and trade journal writes.
 
 ## Setup
 
 ```
 pip install -r requirements.txt
-set UPSTOX_ACCESS_TOKEN=<your token>
-set ORB_TG_TOKEN=<telegram bot token>       # required for live/auto mode
-set ORB_TG_CHAT=<telegram chat id>          # required for live/auto mode
 ```
+
+Create a `.env` file in this folder (never committed - already in `.gitignore`):
+
+```
+UPSTOX_ACCESS_TOKEN=<your token>
+ORB_TG_TOKEN=<telegram bot token>       # required for live/auto mode
+ORB_TG_CHAT=<telegram chat id>          # required for live/auto mode
+```
+`orb_common.py` loads `.env` automatically. Alternatively set these as real environment variables.
 
 Optional risk/sizing overrides (defaults shown):
 

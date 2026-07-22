@@ -8,6 +8,12 @@ from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 import requests
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+except ImportError:
+    pass
+
 INSTRUMENT     = "NIFTY"
 SPOT_KEY       = "NSE_INDEX|Nifty 50"
 STRIKE_GAP     = 50
@@ -131,9 +137,26 @@ def resolve_option_chain(expiry, atm, gap=STRIKE_GAP, n=NUM_STRIKES):
         raise RuntimeError("Missing contracts in instrument master: %s" % missing)
     return out
 
-def get_spot_ltp():
-    data = _get(API_BASE + "/v2/market-quote/ltp", params={"instrument_key": SPOT_KEY})
+def get_ltp(instrument_key):
+    data = _get(API_BASE + "/v2/market-quote/ltp", params={"instrument_key": instrument_key})
     return float(list(data["data"].values())[0]["last_price"])
+
+def get_spot_ltp():
+    return get_ltp(SPOT_KEY)
+
+def resolve_future_instrument_key(expiry):
+    """Nearest NIFTY future contract instrument_key for the given expiry."""
+    rows = load_instrument_master()
+    for r in rows:
+        if r.get("segment") != "NSE_FO":            continue
+        if r.get("underlying_symbol") != INSTRUMENT: continue
+        if r.get("instrument_type") != "FUT":       continue
+        exp_ms = r.get("expiry")
+        if exp_ms is None:                          continue
+        exp_d = datetime.fromtimestamp(exp_ms / 1000, tz=IST).date()
+        if exp_d == expiry:
+            return r["instrument_key"]
+    raise RuntimeError("No NIFTY future found for expiry %s" % expiry)
 
 def get_spot_open_915(session_date):
     """The 9:15 candle's OPEN tick for the underlying index - the reference
@@ -240,7 +263,14 @@ def db():
     conn.execute("""CREATE TABLE IF NOT EXISTS orb_trades(
         session_date TEXT, entry_ts TEXT, side TEXT, strike INTEGER,
         entry_price REAL, exit_ts TEXT, exit_price REAL,
-        exit_reason TEXT, lines_crossed INTEGER, pnl_points REAL)""")
+        exit_reason TEXT, lines_crossed INTEGER, pnl_points REAL,
+        entry_note TEXT, exit_note TEXT)""")
+    # migrate older DBs created before entry_note/exit_note existed
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(orb_trades)").fetchall()]
+    if "entry_note" not in cols:
+        conn.execute("ALTER TABLE orb_trades ADD COLUMN entry_note TEXT")
+    if "exit_note" not in cols:
+        conn.execute("ALTER TABLE orb_trades ADD COLUMN exit_note TEXT")
     conn.commit()
     return conn
 

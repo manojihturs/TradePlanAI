@@ -5,3 +5,5 @@ nse_master_cache.json
 orb_state.json
 logs/
 .env
+trade_journal.xlsx
+ui.log

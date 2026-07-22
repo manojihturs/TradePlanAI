@@ -1,3 +1,5 @@
 requests
 flask
+python-dotenv
+openpyxl
 tzdata; sys_platform == "win32"

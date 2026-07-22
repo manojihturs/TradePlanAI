@@ -13,6 +13,16 @@ orb_common.DB_PATH = os.path.join(tempfile.gettempdir(), "orb_test.db")
 if os.path.exists(orb_common.DB_PATH):
     os.remove(orb_common.DB_PATH)
 
+# Never let synthetic test trades hit the real Telegram bot, even if a real
+# .env is loaded (orb_common auto-loads .env on import).
+orb_common.TELEGRAM_BOT_TOKEN = ""
+orb_common.TELEGRAM_CHAT_ID = ""
+
+import orb_journal
+orb_journal.JOURNAL_PATH = os.path.join(tempfile.gettempdir(), "orb_test_journal.xlsx")
+if os.path.exists(orb_journal.JOURNAL_PATH):
+    os.remove(orb_journal.JOURNAL_PATH)
+
 from orb_common import IST, Candle, db, nearest_strike, SL_POINTS, MAX_DAILY_LOSS, QTY
 from orb_signal import DayState, on_candle_close, ladder_lines
 
@@ -96,10 +106,21 @@ def main():
     on_candle_close(ts(11, 0), ce_back, pe_back, ATM, sp_high, sp_low, levels, st, conn, SESSION)
     check("position closed on zone re-entry", st.position is None)
 
-    trades = conn.execute("SELECT side, entry_price, exit_price, exit_reason, lines_crossed "
-                          "FROM orb_trades WHERE session_date=?", (SESSION.isoformat(),)).fetchall()
+    trades = conn.execute(
+        "SELECT side, entry_price, exit_price, exit_reason, lines_crossed, entry_note, exit_note "
+        "FROM orb_trades WHERE session_date=?", (SESSION.isoformat(),)).fetchall()
     check("one trade logged", len(trades) == 1)
+    check("entry_note recorded", bool(trades[0][5]) and "CE WINS" in trades[0][5])
+    check("exit_note recorded", bool(trades[0][6]) and "Loss" in trades[0][6])
     print("Trade row:", trades[0])
+
+    import orb_journal as _oj
+    check("journal workbook created", os.path.exists(_oj.JOURNAL_PATH))
+    from openpyxl import load_workbook
+    wb = load_workbook(_oj.JOURNAL_PATH)
+    check("journal has a sheet for the session date", str(SESSION) in wb.sheetnames)
+    ws = wb[str(SESSION)]
+    check("journal sheet has header + at least 1 trade row", ws.max_row >= 2)
 
     # =====================================================================
     # PE_WINS mirror path + breakeven-lock TSL
