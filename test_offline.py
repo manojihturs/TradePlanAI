@@ -24,8 +24,9 @@ if os.path.exists(orb_journal.JOURNAL_PATH):
     os.remove(orb_journal.JOURNAL_PATH)
 
 from orb_common import IST, Candle, db, nearest_strike, SL_POINTS, MAX_DAILY_LOSS, QTY
-from orb_signal import DayState, on_candle_close, ladder_lines
+from orb_signal import DayState, on_candle_close, ladder_lines, CANDLE_MINUTES
 from orb_auto import should_run_today_now, next_market_open
+from datetime import timedelta
 
 SESSION = date(2026, 7, 21)
 ATM = 24200
@@ -215,6 +216,22 @@ def main():
     saturday = datetime(2026, 7, 25, 10, 0, tzinfo=IST)
     check("weekend never triggers an immediate run",
           should_run_today_now(saturday, None) is False)
+
+    # =====================================================================
+    # run_live_for_day's backlog catch-up filter (found live on 2026-07-22:
+    # starting orb_auto after 09:21 caused the whole morning's candle
+    # history to be processed as if it were live, entering a trade on a
+    # candle timestamped 09:30 while the real time was already 10:05).
+    # This mirrors the exact filter condition in orb_signal.run_live_for_day.
+    # =====================================================================
+    now_ = datetime(2026, 7, 22, 10, 5, tzinfo=IST)
+    cutoff = now_ - timedelta(minutes=CANDLE_MINUTES)
+    stale_candle_ts = datetime(2026, 7, 22, 9, 30, tzinfo=IST)   # the actual bad entry from today
+    fresh_candle_ts = datetime(2026, 7, 22, 10, 3, tzinfo=IST)
+    check("a 9:30 candle seen at 10:05 is classified as stale backlog (not acted on)",
+          stale_candle_ts < cutoff)
+    check("a 10:03 candle seen at 10:05 is classified as fresh (acted on live)",
+          fresh_candle_ts >= cutoff)
 
     print("\nAll offline logic checks passed.")
 

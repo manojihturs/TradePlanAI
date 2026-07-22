@@ -15,7 +15,7 @@
 #   python orb_signal.py --live                  (after today's 09:21 capture)
 
 import argparse, time as systime
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from orb_common import (IST, CANDLE_MINUTES, SIGNAL_STRIKES, STRIKE_GAP,
                         LAST_ENTRY, SQUARE_OFF, MAX_SIGNALS_PER_DAY,
                         MAX_STOPS_PER_DAY, QTY, MAX_DAILY_LOSS, SL_POINTS,
@@ -212,6 +212,31 @@ def run_live_for_day(session_date):
     pe_key = levels[(atm, "PE")]["key"]
     st, conn = DayState(), db()
     seen = set()
+
+    # Catch-up pass: if this process starts (or reconnects) after 09:21,
+    # fetching candle history returns the whole morning's backlog at once.
+    # Mark every backlog candle as seen WITHOUT running it through
+    # on_candle_close - those closes are stale by the time we see them, and
+    # acting on them would enter/exit at a price the market left behind
+    # minutes or hours ago. Only candles that close from here forward are
+    # treated as live signals.
+    try:
+        ce0 = resample(fetch_intraday_candles(ce_key, 1), CANDLE_MINUTES)
+        pe0 = resample(fetch_intraday_candles(pe_key, 1), CANDLE_MINUTES)
+        pe0_by_ts = {c.ts: c for c in pe0}
+        cutoff = datetime.now(IST) - timedelta(minutes=CANDLE_MINUTES)
+        backlog = 0
+        for c in ce0[:-1]:
+            if c.ts < cutoff and pe0_by_ts.get(c.ts):
+                seen.add(c.ts)
+                backlog += 1
+        if backlog:
+            alert("LIVE %s | caught up on %d stale backlog candle(s) without acting on them "
+                  "(process started late) - only candles closing from now on are live signals."
+                  % (session_date, backlog))
+    except Exception as e:
+        alert("live loop catch-up failed: %s" % e)
+
     alert("LIVE %s | ATM %d | SP zone %d-%d | waiting for closes..."
           % (session_date, atm, sp_low, sp_high))
     while datetime.now(IST).time() < SQUARE_OFF or st.position:
