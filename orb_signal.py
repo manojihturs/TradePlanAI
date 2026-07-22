@@ -251,17 +251,51 @@ def run_replay(session_date):
     atm, sp_high, sp_low, levels = load_day(session_date)
     ce_key = levels[(atm, "CE")]["key"]
     pe_key = levels[(atm, "PE")]["key"]
-    ce = resample(fetch_historical_candles(ce_key, 1, session_date, session_date), CANDLE_MINUTES)
-    pe = resample(fetch_historical_candles(pe_key, 1, session_date, session_date), CANDLE_MINUTES)
-    pe_by_ts = {c.ts: c for c in pe}
+
+    # Full-ladder backfill: fetch every ATM +/- SIGNAL_STRIKES contract's 1-min
+    # historical candles (not just the ATM's own CE/PE) so the other-strike
+    # early-exit rule can be backtested too, not just simulated live. This is
+    # the expensive part - up to (2*SIGNAL_STRIKES+1)*2 contracts fetched once
+    # per replayed day.
+    all_keys = sorted({rec["key"] for rec in levels.values()})
+    alert("REPLAY %s | ATM %d | SP zone %d-%d | backfilling %d contracts for the full "
+          "+/- %d ladder..." % (session_date, atm, sp_low, sp_high, len(all_keys), SIGNAL_STRIKES))
+    hist_by_key = {}
+    for key in all_keys:
+        try:
+            candles = resample(fetch_historical_candles(key, 1, session_date, session_date),
+                               CANDLE_MINUTES)
+            hist_by_key[key] = {c.ts: c.close for c in candles}
+        except Exception as e:
+            alert("REPLAY %s | WARN: could not backfill %s (%s) - early-exit checks "
+                  "involving this strike will be skipped." % (session_date, key, e))
+            hist_by_key[key] = {}
+
+    def historical_ltp_fn(ts):
+        def _fn(instrument_key):
+            close = hist_by_key.get(instrument_key, {}).get(ts)
+            if close is None:
+                raise KeyError("no backfilled candle for %s at %s" % (instrument_key, ts))
+            return close
+        return _fn
+
+    # ATM CE/PE are already in hist_by_key from the full-ladder backfill above -
+    # reuse it instead of fetching those two contracts a second time.
+    class _Px:
+        __slots__ = ("ts", "close")
+        def __init__(self, ts, close):
+            self.ts, self.close = ts, close
+
+    ce_series = sorted(hist_by_key.get(ce_key, {}).items())
+    pe_map = hist_by_key.get(pe_key, {})
+    cutoff_time = datetime.strptime("09:21", "%H:%M").time()
+
     st, conn = DayState(), db()
-    alert("REPLAY %s | ATM %d | SP zone %d-%d | note: other-strike early-exit rule is "
-          "disabled in replay - only the ATM's own candles are backfilled, not live/intrabar "
-          "premiums for every ±%d ladder strike." % (session_date, atm, sp_low, sp_high, SIGNAL_STRIKES))
-    for c in ce:
-        mate = pe_by_ts.get(c.ts)
-        if mate and c.ts.time() >= datetime.strptime("09:21", "%H:%M").time():
-            on_candle_close(c.ts, c, mate, atm, sp_high, sp_low, levels, st, conn, session_date)
+    for ts, ce_close in ce_series:
+        pe_close = pe_map.get(ts)
+        if pe_close is not None and ts.time() >= cutoff_time:
+            on_candle_close(ts, _Px(ts, ce_close), _Px(ts, pe_close), atm, sp_high, sp_low,
+                            levels, st, conn, session_date, ltp_fn=historical_ltp_fn(ts))
     if st.signals == 0:
         alert("No trade all day - NEUTRAL state held. That is a win over sentiment.")
 

@@ -25,7 +25,9 @@ if os.path.exists(orb_journal.JOURNAL_PATH):
 
 from orb_common import (IST, Candle, db, nearest_strike, SL_POINTS, MAX_DAILY_LOSS, QTY,
                         MIN_PROFIT_POINTS, TSL_STEP_POINTS)
-from orb_signal import DayState, on_candle_close, ladder_lines, build_watch_pairs, CANDLE_MINUTES
+import orb_signal
+from orb_signal import (DayState, on_candle_close, ladder_lines, build_watch_pairs,
+                        run_replay, CANDLE_MINUTES)
 from orb_auto import should_run_today_now, next_market_open
 from datetime import timedelta
 
@@ -319,6 +321,36 @@ def main():
           stale_candle_ts < cutoff)
     check("a 10:03 candle seen at 10:05 is classified as fresh (acted on live)",
           fresh_candle_ts >= cutoff)
+
+    # =====================================================================
+    # run_replay's full-ladder backfill: mock the network call and prove
+    # the whole pipeline (fetch -> resample -> per-strike backfill ->
+    # historical_ltp_fn -> on_candle_close) correctly reproduces the
+    # other-strike early exit from real historical data, not just live
+    # polling. This is the actual backtest path a trader would run.
+    # =====================================================================
+    fake_history = {
+        "NSE_FO|ATMCE": [(9, 21, 130), (9, 24, 133)],
+        "NSE_FO|ATMPE": [(9, 21, 2),   (9, 24, 1.5)],
+        "NSE_FO|ITM1CE": [(9, 21, 150), (9, 24, 205)],   # reaches ITM2's level (200) on 2nd candle
+        "NSE_FO|ITM2CE": [(9, 21, 175), (9, 24, 178)],
+        "NSE_FO|ITM1PE": [(9, 21, 90),  (9, 24, 91)],
+    }
+
+    def fake_fetch_historical_candles(instrument_key, minutes, day_from, day_to):
+        rows = fake_history.get(instrument_key, [])
+        return [Candle(ts(h, m), c, c, c, c, 10) for h, m, c in rows]
+
+    orb_signal.fetch_historical_candles = fake_fetch_historical_candles
+    run_replay(SESSION)
+    replay_row = conn.execute(
+        "SELECT entry_price, exit_price, exit_reason FROM orb_trades "
+        "WHERE session_date=? AND entry_ts=?",
+        (SESSION.isoformat(), ts(9, 21).isoformat())).fetchone()
+    check("run_replay entered the CE trade from mocked historical data",
+          replay_row is not None and replay_row[0] == 130)
+    check("run_replay's backfilled other-strike check triggered the same early exit",
+          replay_row is not None and "other strike" in replay_row[2])
 
     print("\nAll offline logic checks passed.")
 
