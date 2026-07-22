@@ -95,13 +95,17 @@ def _snapshot(session_date, atm, sp_high, sp_low, st, note=""):
     )
 
 def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, session_date,
-                     ltp_fn=None):
+                     ltp_fn=None, source="live"):
     """ce_c / pe_c are the just-closed N-min candles of the ATM CE / ATM PE.
 
     ltp_fn: optional callable(instrument_key) -> float, used only for the
     other-strike early-exit check below. Pass None to disable that check
     (e.g. in replay, where we don't have live/intrabar data for every
-    strike in the ladder - only its own 09:15 first candle)."""
+    strike in the ladder - only its own 09:15 first candle).
+
+    source: "live" or "replay" - tags every row this call writes to
+    orb_trades/the journal, so a real execution and a backtest simulation
+    are never indistinguishable in the historical record."""
     implied_spot = atm + ce_c.close - pe_c.close
     atm_ce = levels[(atm, "CE")]
     atm_pe = levels[(atm, "PE")]
@@ -181,23 +185,23 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
             else:
                 exit_note = ("Breakeven: exited flat at %.2f via %s, no gain/loss." % (px, exit_reason))
 
-            conn.execute("INSERT INTO orb_trades VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            conn.execute("INSERT INTO orb_trades VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                          (session_date.isoformat(), p["ts"], p["side"],
                           atm, p["entry"], ts.isoformat(), px, exit_reason,
-                          p["crossed"], pnl_pts, p["entry_note"], exit_note))
+                          p["crossed"], pnl_pts, p["entry_note"], exit_note, source))
             conn.commit()
             st.daily_pnl_rupees += pnl_rupees
             trigger_txt = (" | trigger strike %d @ %.2f (next level %.2f)"
                           % (trigger_strike["strike"], trigger_strike["live_value"],
                              trigger_strike["next_level"])) if trigger_strike else ""
             alert("EXIT %s @ %.2f (%s) | ATM %d | PnL %.2f pts (Rs %.2f, qty %d) | lines crossed %d | "
-                  "day PnL Rs %.2f%s"
+                  "day PnL Rs %.2f%s [%s]"
                   % (p["side"], px, exit_reason, atm, pnl_pts, pnl_rupees, QTY, p["crossed"],
-                     st.daily_pnl_rupees, trigger_txt))
+                     st.daily_pnl_rupees, trigger_txt, source))
             try:
                 orb_journal.append_trade(session_date, {
                     "entry_ts": p["ts"], "exit_ts": ts.isoformat(), "side": p["side"],
-                    "atm_strike": atm, "strike": atm, "qty": QTY,
+                    "atm_strike": atm, "strike": atm, "qty": QTY, "source": source,
                     "entry_price": p["entry"], "exit_price": px,
                     "pnl_points": round(pnl_pts, 2), "pnl_rupees": round(pnl_rupees, 2),
                     "lines_crossed": p["crossed"], "exit_reason": exit_reason,
@@ -257,10 +261,10 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
         }
         st.signals += 1
         alert("ENTRY: %s WINS | ATM %d | buy ATM %s x%d @ %.2f | implied spot %.1f | zone %d-%d | "
-              "SL %.2f (Rs %.0f risk) | targets %s"
+              "SL %.2f (Rs %.0f risk) | targets %s [%s]"
               % (side, atm, side, QTY, entry, implied_spot, sp_low, sp_high,
                  st.position["trail"], SL_POINTS * QTY,
-                 ["%.1f" % x for x in st.position["lines"]]))
+                 ["%.1f" % x for x in st.position["lines"]], source))
     _snapshot(session_date, atm, sp_high, sp_low, st)
 
 def run_replay(session_date):
@@ -334,7 +338,8 @@ def run_replay(session_date):
         pe_close = pe_map.get(ts)
         if pe_close is not None and ts.time() >= cutoff_time:
             on_candle_close(ts, _Px(ts, ce_close), _Px(ts, pe_close), atm, sp_high, sp_low,
-                            levels, st, conn, session_date, ltp_fn=historical_ltp_fn(ts))
+                            levels, st, conn, session_date, ltp_fn=historical_ltp_fn(ts),
+                            source="replay")
     if st.signals == 0:
         alert("No trade all day - NEUTRAL state held. That is a win over sentiment.")
 
@@ -384,7 +389,8 @@ def run_live_for_day(session_date):
                 if mate:
                     seen.add(c.ts)
                     on_candle_close(c.ts, c, mate, atm, sp_high, sp_low,
-                                    levels, st, conn, session_date, ltp_fn=get_ltp)
+                                    levels, st, conn, session_date, ltp_fn=get_ltp,
+                                    source="live")
         except Exception as e:
             alert("live loop error: %s" % e)
         systime.sleep(20)

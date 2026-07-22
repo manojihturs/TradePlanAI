@@ -117,11 +117,12 @@ def main():
     check("position closed on zone re-entry", st.position is None)
 
     trades = conn.execute(
-        "SELECT side, entry_price, exit_price, exit_reason, lines_crossed, entry_note, exit_note "
+        "SELECT side, entry_price, exit_price, exit_reason, lines_crossed, entry_note, exit_note, source "
         "FROM orb_trades WHERE session_date=?", (SESSION.isoformat(),)).fetchall()
     check("one trade logged", len(trades) == 1)
     check("entry_note recorded", bool(trades[0][5]) and "CE WINS" in trades[0][5])
     check("exit_note recorded", bool(trades[0][6]) and "Loss" in trades[0][6])
+    check("source defaults to 'live' when not passed explicitly", trades[0][7] == "live")
     print("Trade row:", trades[0])
 
     import orb_journal as _oj
@@ -344,13 +345,65 @@ def main():
     orb_signal.fetch_historical_candles = fake_fetch_historical_candles
     run_replay(SESSION)
     replay_row = conn.execute(
-        "SELECT entry_price, exit_price, exit_reason FROM orb_trades "
+        "SELECT entry_price, exit_price, exit_reason, source FROM orb_trades "
         "WHERE session_date=? AND entry_ts=?",
         (SESSION.isoformat(), ts(9, 21).isoformat())).fetchone()
     check("run_replay entered the CE trade from mocked historical data",
           replay_row is not None and replay_row[0] == 130)
     check("run_replay's backfilled other-strike check names the triggering strike (24150)",
           replay_row is not None and str(ATM - 50) in replay_row[2])
+    check("run_replay tags its rows source='replay', not 'live'",
+          replay_row is not None and replay_row[3] == "replay")
+
+    # Prove the two sources coexist in the SAME table without being confusable,
+    # and that a query CAN separate them (the actual fix for the mixing bug).
+    live_count = conn.execute(
+        "SELECT COUNT(*) FROM orb_trades WHERE session_date=? AND source='live'",
+        (SESSION.isoformat(),)).fetchone()[0]
+    replay_count = conn.execute(
+        "SELECT COUNT(*) FROM orb_trades WHERE session_date=? AND source='replay'",
+        (SESSION.isoformat(),)).fetchone()[0]
+    check("live and replay rows for the same date are distinguishable by source",
+          live_count > 0 and replay_count > 0)
+
+    # =====================================================================
+    # Journal migration: an existing sheet's header (written under an older
+    # HEADERS list) must gain new columns at the END, never reshuffle
+    # existing ones - otherwise merging this branch would misalign every
+    # row already written to a real trader's trade_journal.xlsx.
+    # =====================================================================
+    import orb_journal as _oj2
+    from openpyxl import load_workbook as _lwb
+    old_sheet_name = "2020-01-01-legacy"
+    wb = _oj2._open_workbook()
+    legacy_headers = ["entry_ts", "exit_ts", "side", "strike", "qty", "entry_price",
+                      "exit_price", "pnl_points", "pnl_rupees", "lines_crossed",
+                      "exit_reason", "why_entered", "why_pnl"]   # pre-source, pre-atm_strike schema
+    ws = wb.create_sheet(old_sheet_name)
+    ws.append(legacy_headers)
+    ws.append(["2020-01-01T09:30:00", "2020-01-01T09:33:00", "CE", 100, 65, 10, 12,
+              2, 130, 0, "trail hit", "legacy entry", "legacy exit"])
+    wb.save(_oj2.JOURNAL_PATH)
+
+    _oj2.append_trade(old_sheet_name, {
+        "entry_ts": "2020-01-01T10:00:00", "exit_ts": "2020-01-01T10:03:00", "side": "PE",
+        "source": "live", "atm_strike": 100, "strike": 100, "qty": 65,
+        "entry_price": 20, "exit_price": 25, "pnl_points": 5, "pnl_rupees": 325,
+        "lines_crossed": 0, "exit_reason": "trail hit", "trigger_strike": "",
+        "trigger_strike_value": "", "why_entered": "new entry", "why_pnl": "new exit",
+    })
+    wb2 = _lwb(_oj2.JOURNAL_PATH)
+    ws2 = wb2[old_sheet_name]
+    new_header = [c.value for c in ws2[1]]
+    check("legacy header columns kept in their original positions",
+          new_header[:len(legacy_headers)] == legacy_headers)
+    check("new columns (source, atm_strike, ...) appended at the end, not inserted",
+          "source" in new_header[len(legacy_headers):])
+    old_row = [c.value for c in ws2[2]]
+    check("pre-existing legacy row is untouched by the migration",
+          old_row[:len(legacy_headers)] == ["2020-01-01T09:30:00", "2020-01-01T09:33:00", "CE",
+                                            100, 65, 10, 12, 2, 130, 0, "trail hit",
+                                            "legacy entry", "legacy exit"])
 
     print("\nAll offline logic checks passed.")
 

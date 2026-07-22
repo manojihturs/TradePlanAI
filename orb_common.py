@@ -268,13 +268,22 @@ def db():
         session_date TEXT, entry_ts TEXT, side TEXT, strike INTEGER,
         entry_price REAL, exit_ts TEXT, exit_price REAL,
         exit_reason TEXT, lines_crossed INTEGER, pnl_points REAL,
-        entry_note TEXT, exit_note TEXT)""")
-    # migrate older DBs created before entry_note/exit_note existed
+        entry_note TEXT, exit_note TEXT, source TEXT)""")
+    # migrate older DBs created before entry_note/exit_note/source existed
     cols = [r[1] for r in conn.execute("PRAGMA table_info(orb_trades)").fetchall()]
     if "entry_note" not in cols:
         conn.execute("ALTER TABLE orb_trades ADD COLUMN entry_note TEXT")
     if "exit_note" not in cols:
         conn.execute("ALTER TABLE orb_trades ADD COLUMN exit_note TEXT")
+    if "source" not in cols:
+        conn.execute("ALTER TABLE orb_trades ADD COLUMN source TEXT")
+        # Deliberately NOT auto-backfilling existing NULL rows as 'live' here:
+        # this DB may already contain rows from both orb_auto.py (live) and
+        # manual orb_signal.py --replay runs (replay) written before this
+        # column existed, and guessing wrong would just re-create the exact
+        # mixing problem this column exists to fix. Existing NULL rows are
+        # left NULL/unknown; correct them explicitly per-row if you know
+        # which mode produced them (see the one-off fix run for 2026-07-22).
     conn.commit()
     return conn
 
