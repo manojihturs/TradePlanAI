@@ -48,6 +48,13 @@ TSL_STEP_POINTS  = SL_POINTS * 0.5                       # trail buffer behind e
 # activates, so a "win" clears exchange fees/STT/brokerage instead of exiting
 # flat (or worse) at plain breakeven.
 MIN_PROFIT_POINTS = float(os.environ.get("ORB_MIN_PROFIT_POINTS", "3"))
+# Minimum points the traded side's own close must clear its 9:15 extreme by,
+# on top of the existing boolean check, before triple confirmation counts.
+# Found in a 9-day backtest: entries with <5pt margin on the traded side's
+# own breakout were disproportionately losses. Applied symmetrically to both
+# CE and PE (see chat: CE showed a clean effect, PE showed the opposite on a
+# small sample - treated as noise pending more data, not a real asymmetry).
+MIN_ENTRY_MARGIN_POINTS = float(os.environ.get("ORB_MIN_ENTRY_MARGIN", "5"))
 
 _HERE   = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(_HERE, "orb_levels.db")

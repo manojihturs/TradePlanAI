@@ -24,7 +24,7 @@ if os.path.exists(orb_journal.JOURNAL_PATH):
     os.remove(orb_journal.JOURNAL_PATH)
 
 from orb_common import (IST, Candle, db, nearest_strike, SL_POINTS, MAX_DAILY_LOSS, QTY,
-                        MIN_PROFIT_POINTS, TSL_STEP_POINTS)
+                        MIN_PROFIT_POINTS, TSL_STEP_POINTS, MIN_ENTRY_MARGIN_POINTS)
 import orb_signal
 from orb_signal import (DayState, on_candle_close, ladder_lines, build_watch_pairs,
                         run_replay, CANDLE_MINUTES)
@@ -111,6 +111,34 @@ def main():
     pe_flat = Candle(ts(10, 0), 60, 60, 55, 60, 10)
     on_candle_close(ts(10, 0), ce_flat, pe_flat, ATM, sp_high, sp_low, levels, st, conn, SESSION)
     check("NEUTRAL state takes no trade", st.position is None and st.signals == 0)
+
+    # =====================================================================
+    # MIN_ENTRY_MARGIN_POINTS: a close that only barely beats its own 9:15
+    # high/low (here by 2 pts, need 5) must NOT count as confirmed, even
+    # though the plain boolean condition (close > high) and the implied-spot
+    # zone break are both satisfied. Found in a 9-day backtest: thin-margin
+    # CE entries were disproportionately losses.
+    # =====================================================================
+    st_margin = DayState()
+    thin_close = 114.6 + max(1.0, MIN_ENTRY_MARGIN_POINTS - 2)   # margin < MIN_ENTRY_MARGIN_POINTS
+    ce_thin = Candle(ts(10, 15), 100, thin_close + 5, 100, thin_close, 10)
+    pe_thin = Candle(ts(10, 15), 15, 15, 8, 10, 10)              # well below its own low (29.15)
+    implied_thin = ATM + thin_close - 10
+    on_candle_close(ts(10, 15), ce_thin, pe_thin, ATM, sp_high, sp_low, levels, st_margin, conn, SESSION)
+    check("thin-margin implied spot still breaks SP high (%.1f > %d)" % (implied_thin, sp_high),
+          implied_thin > sp_high)
+    check("thin-margin entry (%.1fpt < %.0fpt minimum) does NOT trigger CE_WINS"
+          % (thin_close - 114.6, MIN_ENTRY_MARGIN_POINTS),
+          st_margin.position is None and st_margin.signals == 0)
+
+    # Same setup, but CE clears its high by well over the minimum - now it fires.
+    thick_close = 114.6 + MIN_ENTRY_MARGIN_POINTS + 3
+    ce_thick = Candle(ts(10, 18), 100, thick_close + 5, 100, thick_close, 10)
+    pe_thick = Candle(ts(10, 18), 15, 15, 8, 10, 10)
+    on_candle_close(ts(10, 18), ce_thick, pe_thick, ATM, sp_high, sp_low, levels, st_margin, conn, SESSION)
+    check("sufficient-margin entry (%.1fpt >= %.0fpt minimum) DOES trigger CE_WINS"
+          % (thick_close - 114.6, MIN_ENTRY_MARGIN_POINTS),
+          st_margin.position is not None and st_margin.signals == 1)
 
     # --- CE_WINS: implied spot > sp_high, CE close > its 9:15 high (114.6), PE close < its low (29.15)
     ce_break = Candle(ts(10, 30), 100, 130, 100, 120, 10)   # close 120 > 114.6
