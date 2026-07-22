@@ -24,7 +24,7 @@ if os.path.exists(orb_journal.JOURNAL_PATH):
     os.remove(orb_journal.JOURNAL_PATH)
 
 from orb_common import (IST, Candle, db, nearest_strike, SL_POINTS, MAX_DAILY_LOSS, QTY,
-                        MIN_PROFIT_POINTS, MIN_ENTRY_MARGIN_POINTS)
+                        MIN_PROFIT_POINTS, MIN_ENTRY_MARGIN_POINTS, PE_ENTRY_MARGIN_POINTS)
 import orb_signal
 from orb_signal import (DayState, on_candle_close, ladder_lines, build_watch_pairs,
                         run_replay, CANDLE_MINUTES)
@@ -139,6 +139,31 @@ def main():
     check("sufficient-margin entry (%.1fpt >= %.0fpt minimum) DOES trigger CE_WINS"
           % (thick_close - 114.6, MIN_ENTRY_MARGIN_POINTS),
           st_margin.position is not None and st_margin.signals == 1)
+
+    # =====================================================================
+    # PE_ENTRY_MARGIN_POINTS: PE needs a STRONGER margin than CE - a 13-day
+    # combined backtest found PE never once reached its own first target
+    # (11 trades, 0 hits), consistent with put volatility skew producing
+    # false-start confirmations. A margin that clears CE's threshold but not
+    # PE's stronger one must still be rejected when the traded side is PE.
+    # =====================================================================
+    st_pe_margin = DayState()
+    pe_mid_close = 69.0 + (MIN_ENTRY_MARGIN_POINTS + PE_ENTRY_MARGIN_POINTS) / 2
+    ce_mid = Candle(ts(10, 21), 30, 30, 15, 20, 10)      # well below CE's own low (47.1)
+    pe_mid = Candle(ts(10, 21), 60, pe_mid_close + 5, 60, pe_mid_close, 10)
+    on_candle_close(ts(10, 21), ce_mid, pe_mid, ATM, sp_high, sp_low, levels, st_pe_margin, conn, SESSION)
+    check("PE margin (%.1fpt) clears CE's threshold but not PE's stronger one - rejected"
+          % (pe_mid_close - 69.0),
+          st_pe_margin.position is None and st_pe_margin.signals == 0)
+
+    # Same setup but PE clears its own (stronger) threshold - now it fires.
+    pe_thick_close = 69.0 + PE_ENTRY_MARGIN_POINTS + 3
+    ce_mid2 = Candle(ts(10, 24), 30, 30, 15, 20, 10)
+    pe_thick2 = Candle(ts(10, 24), 60, pe_thick_close + 5, 60, pe_thick_close, 10)
+    on_candle_close(ts(10, 24), ce_mid2, pe_thick2, ATM, sp_high, sp_low, levels, st_pe_margin, conn, SESSION)
+    check("PE margin (%.1fpt) above its own %.0fpt threshold DOES trigger PE_WINS"
+          % (pe_thick_close - 69.0, PE_ENTRY_MARGIN_POINTS),
+          st_pe_margin.position is not None and st_pe_margin.signals == 1)
 
     # --- CE_WINS: implied spot > sp_high, CE close > its 9:15 high (114.6), PE close < its low (29.15)
     ce_break = Candle(ts(10, 30), 100, 130, 100, 120, 10)   # close 120 > 114.6

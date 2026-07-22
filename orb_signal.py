@@ -22,7 +22,7 @@ from orb_common import (IST, CANDLE_MINUTES, SIGNAL_STRIKES, STRIKE_GAP, ORB_LOC
                         LAST_ENTRY, SQUARE_OFF, MAX_SIGNALS_PER_DAY,
                         MAX_STOPS_PER_DAY, QTY, MAX_DAILY_LOSS, SL_POINTS,
                         TSL_TRIGGER_R, MIN_PROFIT_POINTS,
-                        MIN_ENTRY_MARGIN_POINTS,
+                        MIN_ENTRY_MARGIN_POINTS, PE_ENTRY_MARGIN_POINTS,
                         APP_NAME, SERVER_NAME, get_ltp,
                         fetch_intraday_candles, fetch_historical_candles,
                         resample, db, alert, write_state)
@@ -294,11 +294,13 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
     # its own 9:15 extreme is a much weaker signal than the boolean alone
     # implies. The supporting (opposite-side decay) condition is left as a
     # plain boolean - that wasn't what the data tested.
+    # PE uses PE_ENTRY_MARGIN_POINTS (stronger) instead - see chat: PE never
+    # once reached its own first target across 11 backtested trades.
     ce_wins = (implied_spot > sp_high
                and ce_c.close > atm_ce["high"] + MIN_ENTRY_MARGIN_POINTS
                and pe_c.close < atm_pe["low"])
     pe_wins = (implied_spot < sp_low
-               and pe_c.close > atm_pe["high"] + MIN_ENTRY_MARGIN_POINTS
+               and pe_c.close > atm_pe["high"] + PE_ENTRY_MARGIN_POINTS
                and ce_c.close < atm_ce["low"])
 
     if ce_wins or pe_wins:
