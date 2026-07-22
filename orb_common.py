@@ -54,16 +54,6 @@ MIN_PROFIT_POINTS = float(os.environ.get("ORB_MIN_PROFIT_POINTS", "3"))
 # CE and PE (see chat: CE showed a clean effect, PE showed the opposite on a
 # small sample - treated as noise pending more data, not a real asymmetry).
 MIN_ENTRY_MARGIN_POINTS = float(os.environ.get("ORB_MIN_ENTRY_MARGIN", "5"))
-# PE-specific override: a combined 13-day/23-trade backtest showed PE trades
-# at 18% win rate vs CE's 58%, and PE NEVER once reached its first real
-# target (LINE 1) across 11 trades - it only ever got cut early (competitor
-# exit / zone re-entry / SL). Consistent with put volatility skew: puts can
-# spike enough to trigger the boolean entry on fear/hedging demand, then
-# mean-revert before the underlying move actually develops. Testing whether
-# requiring a stronger confirmation margin filters out these false starts.
-# CE keeps MIN_ENTRY_MARGIN_POINTS; only PE uses this.
-PE_ENTRY_MARGIN_POINTS = float(os.environ.get("ORB_PE_ENTRY_MARGIN",
-                                              str(MIN_ENTRY_MARGIN_POINTS * 2)))
 
 _HERE   = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(_HERE, "orb_levels.db")
