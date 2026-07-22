@@ -65,12 +65,16 @@ def ladder_strikes_ordered(levels, atm, winning_side):
 
 def build_watch_pairs(levels, atm, winning_side):
     """Early-exit rule: for each strike in the ladder (ITM1..ITM6 or OTM1..OTM6),
-    pair its OWN instrument_key with the NEXT strike's level. If that strike's own
-    live premium ever reaches the next rung before our position reaches its own R1,
-    the move has already skipped ahead at a different strike - exit now rather
-    than waiting for our own target or SL."""
+    pair its OWN (strike, instrument_key) with the NEXT strike's level. If that
+    strike's own live premium ever reaches the next rung before our position
+    reaches its own R1, the move has already skipped ahead at a different
+    strike - exit now rather than waiting for our own target or SL.
+    Returns a list of dicts: {strike, key, next_level} - strike is kept
+    alongside the key so alerts/journal entries can name which strike
+    triggered the exit, not just report an opaque instrument_key."""
     ladder = ladder_strikes_ordered(levels, atm, winning_side)
-    return [(ladder[i]["key"], ladder[i + 1]["level"]) for i in range(len(ladder) - 1)]
+    return [{"strike": ladder[i]["strike"], "key": ladder[i]["key"],
+             "next_level": ladder[i + 1]["level"]} for i in range(len(ladder) - 1)]
 
 class DayState:
     def __init__(self):
@@ -108,16 +112,21 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
         p = st.position
         px = ce_c.close if p["side"] == "CE" else pe_c.close
         exit_reason = None
+        trigger_strike = None   # set below if the other-strike early exit fires
 
         # Other-strike early exit: if a DEEPER strike's own live premium has
         # already reached the level one rung further out than IT (not our
         # own R1), the move has skipped ahead somewhere else in the ±6
         # ladder - exit right now, don't wait for our own SL or TSL.
         if ltp_fn and p.get("watch_pairs"):
-            for ikey, next_level in p["watch_pairs"]:
+            for pair in p["watch_pairs"]:
                 try:
-                    if ltp_fn(ikey) >= next_level:
-                        exit_reason = "other strike reached its next level first - early exit"
+                    live_val = ltp_fn(pair["key"])
+                    if live_val >= pair["next_level"]:
+                        trigger_strike = {"strike": pair["strike"], "live_value": live_val,
+                                          "next_level": pair["next_level"]}
+                        exit_reason = ("strike %d reached %.2f (its own next level %.2f) first "
+                                      "- early exit" % (pair["strike"], live_val, pair["next_level"]))
                         break
                 except Exception:
                     continue
@@ -178,16 +187,23 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
                           p["crossed"], pnl_pts, p["entry_note"], exit_note))
             conn.commit()
             st.daily_pnl_rupees += pnl_rupees
-            alert("EXIT %s @ %.2f (%s) | PnL %.2f pts (Rs %.2f, qty %d) | lines crossed %d | "
-                  "day PnL Rs %.2f"
-                  % (p["side"], px, exit_reason, pnl_pts, pnl_rupees, QTY, p["crossed"],
-                     st.daily_pnl_rupees))
+            trigger_txt = (" | trigger strike %d @ %.2f (next level %.2f)"
+                          % (trigger_strike["strike"], trigger_strike["live_value"],
+                             trigger_strike["next_level"])) if trigger_strike else ""
+            alert("EXIT %s @ %.2f (%s) | ATM %d | PnL %.2f pts (Rs %.2f, qty %d) | lines crossed %d | "
+                  "day PnL Rs %.2f%s"
+                  % (p["side"], px, exit_reason, atm, pnl_pts, pnl_rupees, QTY, p["crossed"],
+                     st.daily_pnl_rupees, trigger_txt))
             try:
                 orb_journal.append_trade(session_date, {
                     "entry_ts": p["ts"], "exit_ts": ts.isoformat(), "side": p["side"],
-                    "strike": atm, "qty": QTY, "entry_price": p["entry"], "exit_price": px,
+                    "atm_strike": atm, "strike": atm, "qty": QTY,
+                    "entry_price": p["entry"], "exit_price": px,
                     "pnl_points": round(pnl_pts, 2), "pnl_rupees": round(pnl_rupees, 2),
                     "lines_crossed": p["crossed"], "exit_reason": exit_reason,
+                    "trigger_strike": trigger_strike["strike"] if trigger_strike else "",
+                    "trigger_strike_value": (round(trigger_strike["live_value"], 2)
+                                            if trigger_strike else ""),
                     "why_entered": p["entry_note"], "why_pnl": exit_note,
                 })
             except Exception as e:
@@ -240,9 +256,9 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
             "entry_note": entry_note,
         }
         st.signals += 1
-        alert("ENTRY: %s WINS | buy ATM %s x%d @ %.2f | implied spot %.1f | zone %d-%d | "
+        alert("ENTRY: %s WINS | ATM %d | buy ATM %s x%d @ %.2f | implied spot %.1f | zone %d-%d | "
               "SL %.2f (Rs %.0f risk) | targets %s"
-              % (side, side, QTY, entry, implied_spot, sp_low, sp_high,
+              % (side, atm, side, QTY, entry, implied_spot, sp_low, sp_high,
                  st.position["trail"], SL_POINTS * QTY,
                  ["%.1f" % x for x in st.position["lines"]]))
     _snapshot(session_date, atm, sp_high, sp_low, st)
@@ -253,23 +269,46 @@ def run_replay(session_date):
     pe_key = levels[(atm, "PE")]["key"]
 
     # Full-ladder backfill: fetch every ATM +/- SIGNAL_STRIKES contract's 1-min
-    # historical candles (not just the ATM's own CE/PE) so the other-strike
-    # early-exit rule can be backtested too, not just simulated live. This is
-    # the expensive part - up to (2*SIGNAL_STRIKES+1)*2 contracts fetched once
+    # candles (not just the ATM's own CE/PE) so the other-strike early-exit
+    # rule can be backtested too, not just simulated live. This is the
+    # expensive part - up to (2*SIGNAL_STRIKES+1)*2 contracts fetched once
     # per replayed day.
+    #
+    # Upstox's /historical-candle endpoint only serves data for dates strictly
+    # before today - it returns an EMPTY list for the current calendar day
+    # even hours after close (verified: 0 historical candles vs 375 intraday
+    # candles for the same key, same day). Using the wrong endpoint for a
+    # same-day replay silently yields zero data -> zero trades, which looks
+    # identical to a real "no signal fired all day" result unless we
+    # distinguish them explicitly.
+    is_today = (session_date == datetime.now(IST).date())
+    fetch_fn = (lambda key: fetch_intraday_candles(key, 1)) if is_today else \
+               (lambda key: fetch_historical_candles(key, 1, session_date, session_date))
+
     all_keys = sorted({rec["key"] for rec in levels.values()})
     alert("REPLAY %s | ATM %d | SP zone %d-%d | backfilling %d contracts for the full "
-          "+/- %d ladder..." % (session_date, atm, sp_low, sp_high, len(all_keys), SIGNAL_STRIKES))
+          "+/- %d ladder via %s endpoint..."
+          % (session_date, atm, sp_low, sp_high, len(all_keys), SIGNAL_STRIKES,
+             "intraday" if is_today else "historical"))
     hist_by_key = {}
+    total_candles = 0
     for key in all_keys:
         try:
-            candles = resample(fetch_historical_candles(key, 1, session_date, session_date),
-                               CANDLE_MINUTES)
+            candles = resample(fetch_fn(key), CANDLE_MINUTES)
             hist_by_key[key] = {c.ts: c.close for c in candles}
+            total_candles += len(candles)
         except Exception as e:
             alert("REPLAY %s | WARN: could not backfill %s (%s) - early-exit checks "
                   "involving this strike will be skipped." % (session_date, key, e))
             hist_by_key[key] = {}
+
+    if total_candles == 0:
+        alert("REPLAY %s | ABORTED: 0 candles returned across all %d contracts - this is "
+              "missing data, NOT a real 'no trade' result. If this is a same-day replay, the "
+              "intraday endpoint may not be populated yet; if historical, Upstox may not retain "
+              "data this far back for these contracts, or this wasn't a trading day. Not "
+              "reporting a trade count for this day." % (session_date, len(all_keys)))
+        return
 
     def historical_ltp_fn(ts):
         def _fn(instrument_key):

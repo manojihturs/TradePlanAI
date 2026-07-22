@@ -83,8 +83,8 @@ def main():
     check("ladder_lines returns ITM1+ITM2 CE highs for CE side", lines == [160, 200])
 
     watch_pairs = build_watch_pairs(levels, ATM, "CE")
-    check("watch_pairs pairs ITM1's key with ITM2's level (200)",
-          watch_pairs == [("NSE_FO|ITM1CE", 200)])
+    check("watch_pairs pairs ITM1's strike+key with ITM2's level (200)",
+          watch_pairs == [{"strike": ATM - 50, "key": "NSE_FO|ITM1CE", "next_level": 200}])
 
     # --- NEUTRAL: implied spot inside zone -> no trade
     st = DayState()
@@ -232,8 +232,8 @@ def main():
     early_exit_row = conn.execute(
         "SELECT exit_reason FROM orb_trades WHERE session_date=? AND entry_ts=?",
         (SESSION.isoformat(), ts(10, 0).isoformat())).fetchone()
-    check("exit reason correctly attributes the early exit",
-          "other strike" in early_exit_row[0])
+    check("exit reason names the triggering strike (ITM1 = ATM-50 = 24150) and its value",
+          str(ATM - 50) in early_exit_row[0] and "205.00" in early_exit_row[0])
 
     # Sanity: with a non-triggering ltp_fn, the same tiny move does NOT exit
     # (proves the check is actually discriminating, not always firing).
@@ -349,8 +349,8 @@ def main():
         (SESSION.isoformat(), ts(9, 21).isoformat())).fetchone()
     check("run_replay entered the CE trade from mocked historical data",
           replay_row is not None and replay_row[0] == 130)
-    check("run_replay's backfilled other-strike check triggered the same early exit",
-          replay_row is not None and "other strike" in replay_row[2])
+    check("run_replay's backfilled other-strike check names the triggering strike (24150)",
+          replay_row is not None and str(ATM - 50) in replay_row[2])
 
     print("\nAll offline logic checks passed.")
 

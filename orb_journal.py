@@ -9,9 +9,10 @@ from openpyxl import Workbook, load_workbook
 _HERE = os.path.dirname(os.path.abspath(__file__))
 JOURNAL_PATH = os.path.join(_HERE, "trade_journal.xlsx")
 
-HEADERS = ["entry_ts", "exit_ts", "side", "strike", "qty", "entry_price",
+HEADERS = ["entry_ts", "exit_ts", "side", "atm_strike", "strike", "qty", "entry_price",
            "exit_price", "pnl_points", "pnl_rupees", "lines_crossed",
-           "exit_reason", "why_entered", "why_pnl"]
+           "exit_reason", "trigger_strike", "trigger_strike_value",
+           "why_entered", "why_pnl"]
 
 def _open_workbook():
     if os.path.exists(JOURNAL_PATH):
