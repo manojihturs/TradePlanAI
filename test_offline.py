@@ -273,11 +273,11 @@ def main():
 
     def fake_ltp_triggering(instrument_key):
         # ITM1CE has already reached ITM2's level (200) - should force an exit,
-        # regardless of the fact our own ATM CE (currently 133, tiny profit,
-        # far below its own SL/trail/first-line) gives no other reason to exit.
+        # regardless of the fact our own ATM CE (currently 131, tiny profit,
+        # below the profit-lock floor) gives no other reason to exit.
         return 205.0 if instrument_key == "NSE_FO|ITM1CE" else 0.0
 
-    ce_tiny_move = Candle(ts(10, 3), 130, 135, 128, 133, 10)   # barely above entry, no other exit fires
+    ce_tiny_move = Candle(ts(10, 3), 130, 135, 128, 131, 10)   # +1 above entry, below profit-lock floor
     pe_tiny_move = Candle(ts(10, 3), 2, 2, 1, 1.5, 10)
     on_candle_close(ts(10, 3), ce_tiny_move, pe_tiny_move, ATM, sp_high, sp_low, levels, st5, conn,
                      SESSION, ltp_fn=fake_ltp_triggering)

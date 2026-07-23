@@ -21,7 +21,7 @@ from datetime import date, datetime, timedelta
 from orb_common import (IST, CANDLE_MINUTES, SIGNAL_STRIKES, STRIKE_GAP, ORB_LOCK,
                         LAST_ENTRY, SQUARE_OFF, MAX_SIGNALS_PER_DAY,
                         MAX_STOPS_PER_DAY, QTY, MAX_DAILY_LOSS, SL_POINTS,
-                        TSL_TRIGGER_R, MIN_PROFIT_POINTS,
+                        MIN_PROFIT_POINTS,
                         MIN_ENTRY_MARGIN_POINTS, MIN_COMPETITOR_DISTANCE_POINTS,
                         APP_NAME, SERVER_NAME, get_ltp, is_competitor_exit_enabled,
                         fetch_intraday_candles, fetch_historical_candles,
@@ -232,10 +232,16 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
             p["crossed"] += 1
             exit_reason = "LINE 1 target hit (%.2f) - confirmed, exit now" % crossed
 
-        # Profit lock once 1R is banked: TSL floor moves to entry + MIN_PROFIT_POINTS
-        # (not plain breakeven) so a "win" clears fees/STT/brokerage instead of
-        # exiting flat or net-negative after costs. Independent of ladder lines.
-        if px - p["entry"] >= TSL_TRIGGER_R * SL_POINTS:
+        # Profit lock the moment we're up by AT LEAST MIN_PROFIT_POINTS - not
+        # after a full 1R (~19pt) move. Found live: today's real target gaps
+        # (e.g. 172.55 -> 178.30, a ~5.75pt move) are often smaller than 1R,
+        # so waiting for 1R meant the 3-point TSL floor could never engage in
+        # time to protect a trade that stalled partway and reversed. This
+        # makes "TSL must be at least 3 points" a standing guarantee on any
+        # real gain, not something that only shows up on unusually large
+        # moves. Target1 still takes priority whenever it's actually reached
+        # (checked above, before this).
+        if px - p["entry"] >= MIN_PROFIT_POINTS:
             p["trail"] = max(p["trail"], p["entry"] + MIN_PROFIT_POINTS)
         profit_locked = p["trail"] >= p["entry"] + MIN_PROFIT_POINTS - 1e-9
 
