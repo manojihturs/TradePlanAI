@@ -10,7 +10,9 @@
 # Trail  = cross-plotted ladder: the OPPOSITE side's first-5min LOW at every
 #          strike ATM +/- SIGNAL_STRIKES (CE_WINS -> watch PE lows, PE_WINS ->
 #          watch CE lows) - not the winning side's own extension.
-# Limits = MAX_SIGNALS_PER_DAY, MAX_STOPS_PER_DAY, LAST_ENTRY, SQUARE_OFF.
+# Limits = MAX_DAILY_LOSS (rupees, hard lockout), LAST_ENTRY, SQUARE_OFF (time cutoffs).
+# No cap on signal count or stop count per day - the machine keeps looking
+# for fresh setups all day; only running out of money or time stops it.
 #
 # Usage:
 #   python orb_signal.py --replay 2026-07-21     (after capturing that date)
@@ -19,8 +21,8 @@
 import argparse, time as systime
 from datetime import date, datetime, timedelta
 from orb_common import (IST, CANDLE_MINUTES, SIGNAL_STRIKES, STRIKE_GAP, ORB_LOCK,
-                        LAST_ENTRY, SQUARE_OFF, MAX_SIGNALS_PER_DAY,
-                        MAX_STOPS_PER_DAY, QTY, MAX_DAILY_LOSS, SL_POINTS,
+                        LAST_ENTRY, SQUARE_OFF,
+                        QTY, MAX_DAILY_LOSS, SL_POINTS,
                         MIN_PROFIT_POINTS,
                         MIN_ENTRY_MARGIN_POINTS, MIN_COMPETITOR_DISTANCE_POINTS,
                         APP_NAME, SERVER_NAME, get_ltp, is_competitor_exit_enabled,
@@ -304,19 +306,22 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
                 alert("journal write failed: %s" % e)
             if pnl_pts < 0:
                 st.stops += 1
+            # No stop-count or signal-count cap anymore - per instruction, keep
+            # looking for fresh setups all day. The ONLY hard stop left is the
+            # rupee daily-loss cap below (real capital protection); everything
+            # else (LAST_ENTRY, SQUARE_OFF) is a time cutoff, not a loss cutoff.
             if st.daily_pnl_rupees <= -MAX_DAILY_LOSS:
                 st.locked = True
                 alert("LOCKED OUT: daily loss Rs %.2f hit max Rs %.2f. No more trades today."
                       % (st.daily_pnl_rupees, MAX_DAILY_LOSS))
-            elif st.stops >= MAX_STOPS_PER_DAY:
-                st.locked = True
-                alert("LOCKED OUT: %d stops today. Machine is done. So are you." % st.stops)
             st.position = None
         _snapshot(session_date, atm, sp_high, sp_low, st)
         return
 
     # ---- no position: look for a winner
-    if st.locked or st.signals >= MAX_SIGNALS_PER_DAY or t >= LAST_ENTRY:
+    # No cap on number of signals/day anymore - only a locked account (rupee
+    # daily-loss cap) or the LAST_ENTRY time cutoff stop new entries.
+    if st.locked or t >= LAST_ENTRY:
         _snapshot(session_date, atm, sp_high, sp_low, st)
         return
 
