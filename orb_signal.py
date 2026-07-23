@@ -153,6 +153,16 @@ class DayState:
         self.stops = 0
         self.locked = False
         self.daily_pnl_rupees = 0.0
+        self.pending = None            # {"side": "CE"/"PE"} - candle 1 of a 2-candle confirm
+
+# Off by default - live behavior unchanged. When True, a winning condition
+# must hold on two CONSECUTIVE candle closes (same side both times) before
+# entering, instead of entering on the first close that satisfies it. Added
+# after 2 of 3 live trades on 2026-07-23 lost via "spot back in zone" - the
+# breakout confirmed on one candle then reversed before profit ever locked,
+# i.e. a single-candle fake breakout. Under test via run_replay before this
+# is ever turned on for --live.
+REQUIRE_TWO_CANDLE_CONFIRMATION = False
 
 def _snapshot(session_date, atm, sp_high, sp_low, st, note=""):
     write_state(
@@ -337,6 +347,20 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
                and pe_c.close > atm_pe["high"] + MIN_ENTRY_MARGIN_POINTS
                and ce_c.close < atm_ce["low"])
 
+    if REQUIRE_TWO_CANDLE_CONFIRMATION:
+        raw_side = "CE" if ce_wins else ("PE" if pe_wins else None)
+        if raw_side is None:
+            st.pending = None
+            _snapshot(session_date, atm, sp_high, sp_low, st)
+            return
+        if not (st.pending and st.pending["side"] == raw_side):
+            # First candle to satisfy the condition - flag it, wait for the
+            # SAME side to confirm again on the next close before entering.
+            st.pending = {"side": raw_side}
+            _snapshot(session_date, atm, sp_high, sp_low, st)
+            return
+        st.pending = None   # confirmed - fall through to the entry below
+
     if ce_wins or pe_wins:
         side  = "CE" if ce_wins else "PE"
         entry = ce_c.close if ce_wins else pe_c.close
@@ -462,6 +486,28 @@ def run_live_for_day(session_date):
     pe_key = levels[(atm, "PE")]["key"]
     st, conn = DayState(), db()
     seen = set()
+
+    # Seed today's already-realized PnL/stops from the DB - DayState is
+    # otherwise purely in-memory and starts at 0 on every process restart,
+    # which happens routinely for code deploys. Without this, the rupee
+    # MAX_DAILY_LOSS lockout - the only hard stop left after the stop/signal
+    # count caps were removed - loses track of losses booked before the most
+    # recent restart and can't actually stop the account at the real cap.
+    # Only "live" rows count (never mix in replay/backtest simulation rows).
+    prior = conn.execute(
+        "SELECT COALESCE(SUM(pnl_points),0), SUM(CASE WHEN pnl_points<0 THEN 1 ELSE 0 END) "
+        "FROM orb_trades WHERE session_date=? AND source='live'",
+        (session_date.isoformat(),)).fetchone()
+    prior_pts, prior_stops = prior[0] or 0.0, prior[1] or 0
+    st.daily_pnl_rupees = prior_pts * QTY
+    st.stops = prior_stops
+    if prior_pts:
+        alert("LIVE %s | resuming with today's already-realized PnL Rs %.2f (%d prior stop(s)) "
+              "carried forward from before this restart." % (session_date, st.daily_pnl_rupees, prior_stops))
+    if st.daily_pnl_rupees <= -MAX_DAILY_LOSS:
+        st.locked = True
+        alert("LOCKED OUT on startup: today's already-realized loss Rs %.2f already hit max "
+              "Rs %.2f before this restart even began." % (st.daily_pnl_rupees, MAX_DAILY_LOSS))
 
     # Catch-up pass: if this process starts (or reconnects) after 09:21,
     # fetching candle history returns the whole morning's backlog at once.
