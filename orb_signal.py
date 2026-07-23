@@ -154,15 +154,39 @@ class DayState:
         self.locked = False
         self.daily_pnl_rupees = 0.0
         self.pending = None            # {"side": "CE"/"PE"} - candle 1 of a 2-candle confirm
+        self.excursion_side = None     # "CE"/"PE"/None - which side of the zone spot is
+                                       # currently outside on, across an unbroken run of
+                                       # candles (tracked every candle, position or not)
+        self.excursion_extreme = None  # best (highest for CE, lowest for PE) implied_spot
+                                       # reached so far in the CURRENT excursion
 
 # Off by default - live behavior unchanged. When True, a winning condition
 # must hold on two CONSECUTIVE candle closes (same side both times) before
 # entering, instead of entering on the first close that satisfies it. Added
 # after 2 of 3 live trades on 2026-07-23 lost via "spot back in zone" - the
 # breakout confirmed on one candle then reversed before profit ever locked,
-# i.e. a single-candle fake breakout. Under test via run_replay before this
-# is ever turned on for --live.
+# i.e. a single-candle fake breakout. BACKTESTED AND REJECTED 2026-07-23:
+# across 14 sessions this turned a +Rs 5905.25 baseline into -Rs 4995.25 -
+# it mostly just delays entries into worse fills rather than filtering bad
+# ones. Left in place, defaulted off, as a documented negative result.
 REQUIRE_TWO_CANDLE_CONFIRMATION = False
+
+# Off by default - live behavior unchanged. When True, blocks a new entry if
+# spot has already pulled back more than STALE_REENTRY_PULLBACK_POINTS from
+# the best level reached so far in the current excursion outside the zone.
+# Targets a specific failure mode found in the 2026-07-23 post-mortem: trade
+# #3 that day (CE @171.85, -Rs 1205.75) fired at 11:10 while ALREADY IN A
+# POSITION opened at 10:45 blocked the system from acting during the actual
+# peak of the move (23994.7 implied at 11:00) - by the time the prior trade
+# closed and this one could fire, spot had already pulled back 21pts and was
+# falling for two straight candles. This is a genuinely late/stale re-entry,
+# distinct from trade #4 that same day (a fresh excursion extreme at entry,
+# which this filter would NOT have blocked - that loss was normal exhaustion
+# risk, not staleness). Excursion tracking runs every candle regardless of
+# position state, specifically so a move that happens WHILE a position is
+# open is still correctly remembered once that position closes.
+REQUIRE_FRESH_EXTREME_FOR_ENTRY = False
+STALE_REENTRY_PULLBACK_POINTS = 10.0
 
 def _snapshot(session_date, atm, sp_high, sp_low, st, note=""):
     write_state(
@@ -190,6 +214,23 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
     atm_ce = levels[(atm, "CE")]
     atm_pe = levels[(atm, "PE")]
     t = ts.time()
+
+    # Excursion tracking: runs every candle regardless of position state, so
+    # a move that happens WHILE a position is open (and therefore can't be
+    # acted on) is still remembered once that position closes and a new
+    # entry is evaluated. Only feeds REQUIRE_FRESH_EXTREME_FOR_ENTRY below.
+    if implied_spot > sp_high:
+        if st.excursion_side != "CE":
+            st.excursion_side, st.excursion_extreme = "CE", implied_spot
+        else:
+            st.excursion_extreme = max(st.excursion_extreme, implied_spot)
+    elif implied_spot < sp_low:
+        if st.excursion_side != "PE":
+            st.excursion_side, st.excursion_extreme = "PE", implied_spot
+        else:
+            st.excursion_extreme = min(st.excursion_extreme, implied_spot)
+    else:
+        st.excursion_side, st.excursion_extreme = None, None   # back inside zone - excursion over
 
     # ---- manage open position first
     if st.position:
@@ -346,6 +387,21 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
     pe_wins = (implied_spot < sp_low
                and pe_c.close > atm_pe["high"] + MIN_ENTRY_MARGIN_POINTS
                and ce_c.close < atm_ce["low"])
+
+    if REQUIRE_FRESH_EXTREME_FOR_ENTRY:
+        # Block a stale re-entry: only allow the signal through if spot is
+        # still within STALE_REENTRY_PULLBACK_POINTS of the best level this
+        # excursion has reached so far (usually 0, i.e. THIS candle IS the
+        # new extreme). If the excursion already peaked earlier - e.g. while
+        # a prior position was open and blocking new entries - and has since
+        # pulled back past the tolerance, treat it as already-faded, not a
+        # fresh setup, even though the raw triple-confirmation still passes.
+        if ce_wins and not (st.excursion_side == "CE"
+                             and implied_spot >= st.excursion_extreme - STALE_REENTRY_PULLBACK_POINTS):
+            ce_wins = False
+        if pe_wins and not (st.excursion_side == "PE"
+                             and implied_spot <= st.excursion_extreme + STALE_REENTRY_PULLBACK_POINTS):
+            pe_wins = False
 
     if REQUIRE_TWO_CANDLE_CONFIRMATION:
         raw_side = "CE" if ce_wins else ("PE" if pe_wins else None)
