@@ -188,6 +188,58 @@ REQUIRE_TWO_CANDLE_CONFIRMATION = False
 REQUIRE_FRESH_EXTREME_FOR_ENTRY = False
 STALE_REENTRY_PULLBACK_POINTS = 10.0
 
+# Rejects entries whose margin (close beyond the traded side's own 9:15
+# extreme) exceeds this - i.e. blocks chasing an already-extended move.
+# ENABLED 2026-07-23 at 20pts after backtesting across 15 sessions: the
+# >20pt-margin bucket was unambiguously negative (-50.75 pts over 37 trades,
+# the largest bucket by trade count), while capping at 20 raised win rate
+# 45.0%->48.9% and total profit Rs4725.50->Rs6363.50. Cross-checked against
+# a single-trade overfitting risk (a +60.30pt trade sits right at the noisy
+# edge of the 14-18pt range) by re-running with that trade excluded from
+# every config - the improvement holds up at cap=20 even without it, unlike
+# tighter caps (15-18) whose exact optimum is not trustworthy from 15 days
+# of data alone. Does NOT address every loss - e.g. the 2026-07-23 "spot
+# back in zone" losses had margins well under 20 and are unaffected by this.
+MAX_ENTRY_MARGIN_POINTS = 20.0
+
+# Off by default - live behavior unchanged. When True, requires the SAME
+# triple-confirmation pattern (winning side beats its own 9:15 extreme by
+# the margin, losing side stays below its own) to ALSO hold at the next
+# strike in-the-money for the winning side (ATM-50 for CE, ATM+50 for PE),
+# not just at ATM. Based on a manual trading methodology reviewed
+# 2026-07-23 (YouTube "Trade Plan" transcripts) whose core discipline rule
+# is: a setup is only real when the same premium behavior shows up at
+# MULTIPLE strikes simultaneously, not one strike in isolation - one strike
+# alone can be noise/manipulation. Reuses ltp_fn (already passed into
+# on_candle_close for the competitor/other-strike checks) so it costs no
+# extra live API infrastructure; in replay it reads the same full-ladder
+# backfill already fetched for those checks. Under test via run_replay
+# before ever turned on for --live.
+REQUIRE_ADJACENT_STRIKE_CONFIRMATION = False
+
+def adjacent_strike_confirms(levels, atm, side, ltp_fn):
+    """Checks whether the next strike in-the-money for `side` independently
+    shows the same triple-confirmation pattern as ATM, using its own first-
+    5min high/low and a live/backfilled close via ltp_fn. Fails CLOSED (no
+    confirmation) if ltp_fn is unavailable, the adjacent strike wasn't
+    captured, or the lookup errors - missing data is not a free pass."""
+    if not ltp_fn:
+        return False
+    adj_strike = atm - STRIKE_GAP if side == "CE" else atm + STRIKE_GAP
+    ce_rec = levels.get((adj_strike, "CE"))
+    pe_rec = levels.get((adj_strike, "PE"))
+    if not ce_rec or not pe_rec:
+        return False
+    try:
+        ce_close = ltp_fn(ce_rec["key"])
+        pe_close = ltp_fn(pe_rec["key"])
+    except Exception:
+        return False
+    if side == "CE":
+        return ce_close > ce_rec["high"] + MIN_ENTRY_MARGIN_POINTS and pe_close < pe_rec["low"]
+    else:
+        return pe_close > pe_rec["high"] + MIN_ENTRY_MARGIN_POINTS and ce_close < ce_rec["low"]
+
 def _snapshot(session_date, atm, sp_high, sp_low, st, note=""):
     write_state(
         app_name=APP_NAME, server=SERVER_NAME,
@@ -381,12 +433,26 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
     # its own 9:15 extreme is a much weaker signal than the boolean alone
     # implies. The supporting (opposite-side decay) condition is left as a
     # plain boolean - that wasn't what the data tested.
+    ce_margin = ce_c.close - atm_ce["high"]
+    pe_margin = pe_c.close - atm_pe["high"]
     ce_wins = (implied_spot > sp_high
-               and ce_c.close > atm_ce["high"] + MIN_ENTRY_MARGIN_POINTS
+               and ce_margin > MIN_ENTRY_MARGIN_POINTS
                and pe_c.close < atm_pe["low"])
     pe_wins = (implied_spot < sp_low
-               and pe_c.close > atm_pe["high"] + MIN_ENTRY_MARGIN_POINTS
+               and pe_margin > MIN_ENTRY_MARGIN_POINTS
                and ce_c.close < atm_ce["low"])
+
+    # See MAX_ENTRY_MARGIN_POINTS above for why this cap exists.
+    if ce_wins and MAX_ENTRY_MARGIN_POINTS is not None and ce_margin > MAX_ENTRY_MARGIN_POINTS:
+        ce_wins = False
+    if pe_wins and MAX_ENTRY_MARGIN_POINTS is not None and pe_margin > MAX_ENTRY_MARGIN_POINTS:
+        pe_wins = False
+
+    if REQUIRE_ADJACENT_STRIKE_CONFIRMATION:
+        if ce_wins and not adjacent_strike_confirms(levels, atm, "CE", ltp_fn):
+            ce_wins = False
+        if pe_wins and not adjacent_strike_confirms(levels, atm, "PE", ltp_fn):
+            pe_wins = False
 
     if REQUIRE_FRESH_EXTREME_FOR_ENTRY:
         # Block a stale re-entry: only allow the signal through if spot is
@@ -460,17 +526,25 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
                  "ON" if is_competitor_exit_enabled() else "OFF", source))
     _snapshot(session_date, atm, sp_high, sp_low, st)
 
-def run_replay(session_date):
+class _Px:
+    __slots__ = ("ts", "close")
+    def __init__(self, ts, close):
+        self.ts, self.close = ts, close
+
+def fetch_day_data(session_date, quiet=False):
+    """The expensive, network-bound half of a replay: pulls the full ATM +/-
+    SIGNAL_STRIKES ladder's 1-min candles once. Returns (atm, sp_high,
+    sp_low, levels, hist_by_key, ce_key, pe_key), all of which simulate_day()
+    can be called against repeatedly with different strategy-flag settings
+    WITHOUT re-fetching - splitting fetch from simulate is what makes A/B
+    backtesting multiple rule variants fast instead of re-downloading the
+    same candles once per variant (each full-ladder fetch is the dominant
+    cost of a replay, not the simulation itself).
+    hist_by_key is {} if nothing could be fetched (caller must check)."""
     atm, sp_high, sp_low, levels = load_day(session_date)
     ce_key = levels[(atm, "CE")]["key"]
     pe_key = levels[(atm, "PE")]["key"]
 
-    # Full-ladder backfill: fetch every ATM +/- SIGNAL_STRIKES contract's 1-min
-    # candles (not just the ATM's own CE/PE) so the other-strike early-exit
-    # rule can be backtested too, not just simulated live. This is the
-    # expensive part - up to (2*SIGNAL_STRIKES+1)*2 contracts fetched once
-    # per replayed day.
-    #
     # Upstox's /historical-candle endpoint only serves data for dates strictly
     # before today - it returns an EMPTY list for the current calendar day
     # even hours after close (verified: 0 historical candles vs 375 intraday
@@ -483,10 +557,11 @@ def run_replay(session_date):
                (lambda key: fetch_historical_candles(key, 1, session_date, session_date))
 
     all_keys = sorted({rec["key"] for rec in levels.values()})
-    alert("REPLAY %s | ATM %d | SP zone %d-%d | backfilling %d contracts for the full "
-          "+/- %d ladder via %s endpoint..."
-          % (session_date, atm, sp_low, sp_high, len(all_keys), SIGNAL_STRIKES,
-             "intraday" if is_today else "historical"))
+    if not quiet:
+        alert("REPLAY %s | ATM %d | SP zone %d-%d | backfilling %d contracts for the full "
+              "+/- %d ladder via %s endpoint..."
+              % (session_date, atm, sp_low, sp_high, len(all_keys), SIGNAL_STRIKES,
+                 "intraday" if is_today else "historical"))
     hist_by_key = {}
     total_candles = 0
     for key in all_keys:
@@ -495,18 +570,28 @@ def run_replay(session_date):
             hist_by_key[key] = {c.ts: c.close for c in candles}
             total_candles += len(candles)
         except Exception as e:
-            alert("REPLAY %s | WARN: could not backfill %s (%s) - early-exit checks "
-                  "involving this strike will be skipped." % (session_date, key, e))
+            if not quiet:
+                alert("REPLAY %s | WARN: could not backfill %s (%s) - early-exit checks "
+                      "involving this strike will be skipped." % (session_date, key, e))
             hist_by_key[key] = {}
 
     if total_candles == 0:
-        alert("REPLAY %s | ABORTED: 0 candles returned across all %d contracts - this is "
-              "missing data, NOT a real 'no trade' result. If this is a same-day replay, the "
-              "intraday endpoint may not be populated yet; if historical, Upstox may not retain "
-              "data this far back for these contracts, or this wasn't a trading day. Not "
-              "reporting a trade count for this day." % (session_date, len(all_keys)))
-        return
+        if not quiet:
+            alert("REPLAY %s | ABORTED: 0 candles returned across all %d contracts - this is "
+                  "missing data, NOT a real 'no trade' result. If this is a same-day replay, the "
+                  "intraday endpoint may not be populated yet; if historical, Upstox may not "
+                  "retain data this far back for these contracts, or this wasn't a trading day. "
+                  "Not reporting a trade count for this day." % (session_date, len(all_keys)))
+        return atm, sp_high, sp_low, levels, {}, ce_key, pe_key
 
+    return atm, sp_high, sp_low, levels, hist_by_key, ce_key, pe_key
+
+def simulate_day(session_date, atm, sp_high, sp_low, levels, hist_by_key, ce_key, pe_key):
+    """Pure simulation over pre-fetched candle data - no network calls, so
+    it's safe (and fast) to call this many times over the same fetched data
+    with different global strategy flags set, to A/B test rule variants.
+    Returns the resulting DayState (trades already committed to orb_trades
+    tagged source='replay')."""
     def historical_ltp_fn(ts):
         def _fn(instrument_key):
             close = hist_by_key.get(instrument_key, {}).get(ts)
@@ -514,13 +599,6 @@ def run_replay(session_date):
                 raise KeyError("no backfilled candle for %s at %s" % (instrument_key, ts))
             return close
         return _fn
-
-    # ATM CE/PE are already in hist_by_key from the full-ladder backfill above -
-    # reuse it instead of fetching those two contracts a second time.
-    class _Px:
-        __slots__ = ("ts", "close")
-        def __init__(self, ts, close):
-            self.ts, self.close = ts, close
 
     ce_series = sorted(hist_by_key.get(ce_key, {}).items())
     pe_map = hist_by_key.get(pe_key, {})
@@ -533,6 +611,13 @@ def run_replay(session_date):
             on_candle_close(ts, _Px(ts, ce_close), _Px(ts, pe_close), atm, sp_high, sp_low,
                             levels, st, conn, session_date, ltp_fn=historical_ltp_fn(ts),
                             source="replay")
+    return st
+
+def run_replay(session_date):
+    atm, sp_high, sp_low, levels, hist_by_key, ce_key, pe_key = fetch_day_data(session_date)
+    if not hist_by_key or not any(hist_by_key.values()):
+        return
+    st = simulate_day(session_date, atm, sp_high, sp_low, levels, hist_by_key, ce_key, pe_key)
     if st.signals == 0:
         alert("No trade all day - NEUTRAL state held. That is a win over sentiment.")
 
