@@ -278,9 +278,10 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
                           % (trigger_strike["strike"], trigger_strike["live_value"],
                              trigger_strike["next_level"])) if trigger_strike else ""
             alert("EXIT %s @ %.2f (%s) | ATM %d | PnL %.2f pts (Rs %.2f, qty %d) | lines crossed %d | "
-                  "day PnL Rs %.2f%s [%s]"
+                  "day PnL Rs %.2f%s | Competitor: %s [%s]"
                   % (p["side"], px, exit_reason, atm, pnl_pts, pnl_rupees, QTY, p["crossed"],
-                     st.daily_pnl_rupees, trigger_txt, source))
+                     st.daily_pnl_rupees, trigger_txt,
+                     "ON" if is_competitor_exit_enabled() else "OFF", source))
             try:
                 orb_journal.append_trade(session_date, {
                     "entry_ts": p["ts"], "exit_ts": ts.isoformat(), "side": p["side"],
@@ -361,10 +362,11 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
                           % ("PE" if side == "CE" else "CE", competitor_level, competitor_strike)
                           ) if competitor_level is not None else ""
         alert("ENTRY: %s WINS | ATM %d | buy ATM %s x%d @ %.2f | implied spot %.1f | zone %d-%d | "
-              "SL %.2f (Rs %.0f risk) | targets %s%s [%s]"
+              "SL %.2f (Rs %.0f risk) | targets %s%s | Competitor: %s [%s]"
               % (side, atm, side, QTY, entry, implied_spot, sp_low, sp_high,
                  st.position["trail"], SL_POINTS * QTY,
-                 ["%.1f" % x for x in st.position["lines"]], competitor_txt, source))
+                 ["%.1f" % x for x in st.position["lines"]], competitor_txt,
+                 "ON" if is_competitor_exit_enabled() else "OFF", source))
     _snapshot(session_date, atm, sp_high, sp_low, st)
 
 def run_replay(session_date):

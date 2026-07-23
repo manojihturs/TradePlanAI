@@ -301,14 +301,17 @@ def main():
     orb_signal.ENABLE_OTHER_STRIKE_EARLY_EXIT = False   # restore the default before continuing
 
     # =====================================================================
-    # Simplified competitor exit rule (the ACTIVE rule now): while holding
-    # CE, the competitor is the ATM PE. Its reference level is the SAME
-    # strike (24150) that feeds our own target1, but read from OUR side's
-    # HIGH field (levels[(24150,"CE")]["high"] = 1.0, seeded above). If PE's
-    # own live close falls to/through 1.0 before our target1 (160) is hit,
-    # exit immediately - no ltp_fn/network needed, uses the candles already
-    # passed into on_candle_close.
+    # Simplified competitor exit rule: while holding CE, the competitor is
+    # the ATM PE. Its reference level is the SAME strike (24150) that feeds
+    # our own target1, but read from OUR side's HIGH field
+    # (levels[(24150,"CE")]["high"] = 1.0, seeded above). If PE's own live
+    # close falls to/through 1.0 before our target1 (160) is hit, exit
+    # immediately - no ltp_fn/network needed, uses the candles already
+    # passed into on_candle_close. This rule now defaults OFF (see the
+    # toggle test below) - explicitly enable it here to test the mechanism
+    # itself in isolation.
     # =====================================================================
+    set_setting("competitor_exit_enabled", True)
     st7 = DayState()
     ce_e5 = Candle(ts(11, 0), 100, 140, 100, 130, 10)
     pe_e5 = Candle(ts(11, 0), 20, 20, 1, 2, 10)   # implied = 24328 > sp_high -> CE wins, entry 130
@@ -375,9 +378,11 @@ def main():
     # Competitor Check toggle (dashboard button): OFF must skip the rule
     # entirely, even when the competitor's price would otherwise trigger it.
     # =====================================================================
-    check("competitor check defaults to enabled", is_competitor_exit_enabled() is True)
-    set_setting("competitor_exit_enabled", False)
-    check("toggle correctly reads back as disabled", is_competitor_exit_enabled() is False)
+    # Remove the settings file entirely (the st7/st8 block above left it set
+    # to True) to exercise the TRUE fallback default, not a leftover value.
+    if os.path.exists(orb_common.SETTINGS_PATH):
+        os.remove(orb_common.SETTINGS_PATH)
+    check("competitor check defaults to DISABLED", is_competitor_exit_enabled() is False)
 
     st_toggle = DayState()
     ce_te = Candle(ts(12, 40), 100, 140, 100, 130, 10)
@@ -386,21 +391,25 @@ def main():
     check("CE entered for toggle test", st_toggle.position is not None)
 
     # Same trigger candle as the earlier competitor test (PE closes at 0.9,
-    # <= the seeded 1.0 competitor level) - with the toggle OFF, this must
-    # NOT exit the position.
+    # <= the seeded 1.0 competitor level) - with the (default) toggle OFF,
+    # this must NOT exit the position.
     ce_te2 = Candle(ts(12, 43), 130, 135, 128, 132, 10)
     pe_te2 = Candle(ts(12, 43), 2, 2, 0.8, 0.9, 10)
     on_candle_close(ts(12, 43), ce_te2, pe_te2, ATM, sp_high, sp_low, levels, st_toggle, conn, SESSION)
-    check("competitor breach is IGNORED while the toggle is OFF",
+    check("competitor breach is IGNORED while the toggle is OFF (default)",
           st_toggle.position is not None)
 
-    # Flip it back ON - the identical candle now closes it.
+    # Flip it ON - the identical candle now closes it.
     set_setting("competitor_exit_enabled", True)
+    check("toggle correctly reads back as enabled", is_competitor_exit_enabled() is True)
     ce_te3 = Candle(ts(12, 46), 132, 135, 128, 132, 10)
     pe_te3 = Candle(ts(12, 46), 0.9, 0.9, 0.7, 0.85, 10)
     on_candle_close(ts(12, 46), ce_te3, pe_te3, ATM, sp_high, sp_low, levels, st_toggle, conn, SESSION)
-    check("competitor breach fires again once the toggle is back ON",
+    check("competitor breach fires again once the toggle is ON",
           st_toggle.position is None)
+
+    # Restore the default (OFF) for the rest of the suite.
+    set_setting("competitor_exit_enabled", False)
 
     # =====================================================================
     # Daily loss cap: two losing trades should lock the machine out
@@ -505,6 +514,7 @@ def main():
         return [Candle(ts(h, m), c, c, c, c, 10) for h, m, c in rows]
 
     orb_signal.fetch_historical_candles = fake_fetch_historical_candles
+    set_setting("competitor_exit_enabled", True)   # this rule defaults OFF now - enable for this test
     run_replay(SESSION)
     replay_row = conn.execute(
         "SELECT entry_price, exit_price, exit_reason, source FROM orb_trades "

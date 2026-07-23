@@ -73,7 +73,7 @@ LOG_DIR = os.path.join(_HERE, "logs")
 STATE_PATH = os.path.join(_HERE, "orb_state.json")
 SETTINGS_PATH = os.path.join(_HERE, "orb_settings.json")
 
-DEFAULT_SETTINGS = {"competitor_exit_enabled": True}
+DEFAULT_SETTINGS = {"competitor_exit_enabled": False}
 
 def get_settings():
     """Live, cross-process toggles (e.g. the dashboard's Competitor Check
@@ -97,7 +97,7 @@ def set_setting(key, value):
     return settings
 
 def is_competitor_exit_enabled():
-    return bool(get_settings().get("competitor_exit_enabled", True))
+    return bool(get_settings().get("competitor_exit_enabled", False))
 
 API_BASE = "https://api.upstox.com"
 INSTRUMENT_MASTER_URL = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
