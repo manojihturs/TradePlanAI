@@ -46,12 +46,12 @@ from orb_signal import (DayState, on_candle_close, ladder_lines, build_watch_pai
 from orb_auto import should_run_today_now, next_market_open
 from datetime import timedelta
 
-# The general suite exercises the pre-OI-filter behavior; REQUIRE_OI_TREND_
-# CONFIRMATION defaults to True in production now, but flipping it on here
-# would fail every entry test that doesn't also pass a matching oi_trend_fn
-# (the filter fails closed with none given). Dedicated OI-trend tests below
-# set this locally and restore it before returning to the general suite.
+# The general suite exercises the pre-filter behavior; both OI-based
+# filters default True/differently in production, but flipping them on
+# here would fail every entry test that doesn't also pass a matching
+# oi_trend_fn/fut_oi_fn (both fail closed with none given).
 orb_signal.REQUIRE_OI_TREND_CONFIRMATION = False
+orb_signal.REQUIRE_FUTURES_OI_CONFIRMATION = False
 
 SESSION = date(2026, 7, 21)
 ATM = 24200
@@ -529,6 +529,12 @@ def main():
         return [Candle(ts(h, m), c, c, c, c, 10) for h, m, c in rows]
 
     orb_signal.fetch_historical_candles = fake_fetch_historical_candles
+    # fetch_day_data also resolves the future contract for
+    # REQUIRE_FUTURES_OI_CONFIRMATION, which otherwise calls
+    # load_instrument_master() - a REAL network request. Mocked here so
+    # "no network / Upstox token required" stays true regardless of
+    # whether a same-day instrument-master cache file happens to exist.
+    orb_signal.resolve_future_instrument_key = lambda expiry: "NSE_FO|FUT"
     set_setting("competitor_exit_enabled", True)   # this rule defaults OFF now - enable for this test
     run_replay(SESSION)
     replay_row = conn.execute(

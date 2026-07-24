@@ -28,7 +28,7 @@ from orb_common import (IST, CANDLE_MINUTES, SIGNAL_STRIKES, STRIKE_GAP, ORB_LOC
                         MIN_ENTRY_MARGIN_POINTS, MIN_COMPETITOR_DISTANCE_POINTS,
                         APP_NAME, SERVER_NAME, get_ltp, is_competitor_exit_enabled,
                         fetch_intraday_candles, fetch_historical_candles,
-                        resample, db, alert, write_state)
+                        resample, db, alert, write_state, resolve_future_instrument_key)
 import orb_journal
 
 def load_day(session_date):
@@ -252,21 +252,37 @@ def adjacent_strike_confirms(levels, atm, side, ltp_fn):
 # opposite the option sellers).
 #
 # Backtested across 17 sessions (2026-07-01 to 07-23): baseline NET
-# -Rs484.25 (51 trades, 39.2% win) -> with this filter NET +Rs572.00 (42
-# trades, 40.5% win) - the first change this week that flips the sample
-# from net-loss to net-profit. Cross-checked for the same single-trade
-# overfitting risk found earlier (the +60.30pt 07-08 trade): excluding it
-# from BOTH configs, baseline is -Rs4273.75 vs filtered -Rs3217.50 - still
-# net negative without that trade, but the filter is consistently
-# ~Rs1050 better either way, so the RELATIVE improvement is real even
-# though the ABSOLUTE positive headline number leans on one lucky trade.
-# OI_TREND_MIN_STREAK swept at 1/5/10 - all three produce IDENTICAL trade
-# sets on this data (once the sign confirms after 09:45 it doesn't flip
-# within our entry window), so streak length currently has no effect;
-# left at 1 (simplest) rather than pretending higher values add rigor they
-# don't demonstrably provide yet.
-REQUIRE_OI_TREND_CONFIRMATION = True
-OI_TREND_MIN_STREAK = 1   # consecutive candles required in the confirming direction
+# -Rs484.25 (51 trades, 39.2% win) -> with this filter (streak=2) NET
+# +Rs572.00 (42 trades, 40.5% win) - the first change this week that flips
+# the sample from net-loss to net-profit. Cross-checked for the same
+# single-trade overfitting risk found earlier (the +60.30pt 07-08 trade):
+# excluding it from BOTH configs, baseline is -Rs4273.75 vs filtered
+# -Rs3217.50 - still net negative without that trade, but the filter is
+# consistently ~Rs1050 better either way, so the RELATIVE improvement is
+# real even though the ABSOLUTE positive headline leans on one lucky trade.
+#
+# OI_TREND_MIN_STREAK=2 is NOT arbitrary - an earlier sweep (1/2/3)
+# appeared to show no difference between streak values due to a real bug
+# (oi_trend_confirms' min_streak default parameter is bound at function-
+# DEFINITION time, so setting orb_signal.OI_TREND_MIN_STREAK afterward
+# silently did nothing - every "different streak" test was actually
+# testing whatever streak equaled when the module was first imported).
+# Fixed by passing OI_TREND_MIN_STREAK explicitly at every call site
+# instead of relying on the default. Once genuinely varied: streak=1 gives
+# NET -Rs718.25 (worse than no filter at all), streak=2 gives +Rs572.00,
+# streak=3 collapses to -Rs5791.50 (over-filtered, too few trades left).
+# 2 is a real, sharp optimum on this data, not a flat plateau - treat it
+# as provisional pending more sessions, same caveat as every threshold
+# tuned on 17 days this week.
+#
+# DISABLED again same day once REQUIRE_FUTURES_OI_CONFIRMATION (below) was
+# backtested and found stronger standalone (+Rs2486.25 vs this filter's
+# +Rs572.00, both vs the same baseline) - combining both over-filters down
+# to 26 trades and nets only +Rs230.75, worse than either alone. Left
+# fully implemented and correct (useful if futures-OI ever needs a second
+# opinion later), just not the active filter right now.
+REQUIRE_OI_TREND_CONFIRMATION = False
+OI_TREND_MIN_STREAK = 2   # consecutive candles required in the confirming direction
 # The video is explicit: check OI trend only from 09:45 onward - before that,
 # OI hasn't built up enough to mean anything and the diff swings sign
 # candle-to-candle (verified 2026-07-24 on real data: the 09:20-09:40 diff
@@ -329,6 +345,57 @@ def oi_trend_confirms(oi_diff, sorted_ts, current_ts, side, min_streak=OI_TREND_
             return False
     return True
 
+# ENABLED 2026-07-24 - supporting strategy #2, same "Trending OI" video's
+# closing point: cross-check the underlying FUTURE contract's own
+# price+OI relationship. Standard futures OI interpretation (price
+# direction, OI direction):
+#   price up   + OI up   = long buildup    (real fresh buying - bullish)
+#   price up   + OI down = short covering  (weak, not fresh conviction)
+#   price down + OI up   = short buildup   (real fresh selling - bearish)
+#   price down + OI down = long unwinding  (weak, not fresh conviction)
+# CE_WINS needs "long buildup" on the future; PE_WINS needs "short
+# buildup". Same one contract already resolved for the SP-zone parity
+# calc, so this costs exactly one extra instrument's candle history per
+# day, not a new ladder fetch.
+#
+# Backtested standalone across the same 17 sessions: true baseline (no
+# filters) NET -Rs484.25 (51 trades) -> this filter alone NET +Rs2486.25
+# (31 trades, 41.9% win) - clearly stronger than REQUIRE_OI_TREND_
+# CONFIRMATION's own +Rs572.00 result, and combining both over-filters to
+# only 26 trades / +Rs230.75 (worse than either alone) - so this runs
+# ALONE, with REQUIRE_OI_TREND_CONFIRMATION off. Cross-checked against
+# the same single-outlier-trade risk (+60.30pt 07-08 trade): excluding it,
+# baseline -Rs4273.75 vs filtered -Rs1303.25 - a ~Rs2970 improvement
+# either way, the largest robust margin found this week.
+REQUIRE_FUTURES_OI_CONFIRMATION = True
+FUTURES_OI_VALID_FROM = time(9, 45)   # same reasoning as OI_TREND_VALID_FROM
+
+def classify_futures_oi(price_change, oi_change):
+    if price_change > 0 and oi_change > 0:
+        return "long_buildup"
+    if price_change > 0:
+        return "short_covering"
+    if price_change < 0 and oi_change > 0:
+        return "short_buildup"
+    if price_change < 0:
+        return "long_unwinding"
+    return "flat"
+
+def compute_futures_oi_series(fut_candles):
+    """fut_candles: sorted list of Candle (close, oi) for the future contract.
+    Returns {ts: classification} for candle i vs candle i-1."""
+    out = {}
+    for i in range(1, len(fut_candles)):
+        prev, cur = fut_candles[i - 1], fut_candles[i]
+        out[cur.ts] = classify_futures_oi(cur.close - prev.close, cur.oi - prev.oi)
+    return out
+
+def futures_oi_confirms(fut_oi_series, ts, side):
+    cls = fut_oi_series.get(ts)
+    if cls is None:
+        return False
+    return cls == "long_buildup" if side == "CE" else cls == "short_buildup"
+
 def _snapshot(session_date, atm, sp_high, sp_low, st, note=""):
     write_state(
         app_name=APP_NAME, server=SERVER_NAME,
@@ -340,7 +407,7 @@ def _snapshot(session_date, atm, sp_high, sp_low, st, note=""):
     )
 
 def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, session_date,
-                     ltp_fn=None, source="live", oi_trend_fn=None):
+                     ltp_fn=None, source="live", oi_trend_fn=None, fut_oi_fn=None):
     """ce_c / pe_c are the just-closed N-min candles of the ATM CE / ATM PE.
 
     ltp_fn: optional callable(instrument_key) -> float, used only for the
@@ -566,6 +633,12 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
         if pe_wins and not (oi_trend_fn and oi_trend_fn("PE")):
             pe_wins = False
 
+    if REQUIRE_FUTURES_OI_CONFIRMATION and t >= FUTURES_OI_VALID_FROM:
+        if ce_wins and not (fut_oi_fn and fut_oi_fn("CE")):
+            ce_wins = False
+        if pe_wins and not (fut_oi_fn and fut_oi_fn("PE")):
+            pe_wins = False
+
     if REQUIRE_FRESH_EXTREME_FOR_ENTRY:
         # Block a stale re-entry: only allow the signal through if spot is
         # still within STALE_REENTRY_PULLBACK_POINTS of the best level this
@@ -715,11 +788,27 @@ def fetch_day_data(session_date, quiet=False):
                   "intraday endpoint may not be populated yet; if historical, Upstox may not "
                   "retain data this far back for these contracts, or this wasn't a trading day. "
                   "Not reporting a trade count for this day." % (session_date, len(all_keys)))
-        return atm, sp_high, sp_low, levels, {}, ce_key, pe_key, {}
+        return atm, sp_high, sp_low, levels, {}, ce_key, pe_key, {}, []
 
-    return atm, sp_high, sp_low, levels, hist_by_key, ce_key, pe_key, oi_by_key
+    # One extra contract's candle history, for REQUIRE_FUTURES_OI_CONFIRMATION -
+    # the same future already resolved for the SP-zone parity calc, not a new
+    # ladder fetch. Best-effort: an empty list just means that filter can't
+    # confirm anything for this day (fails closed, same as everywhere else).
+    fut_candles = []
+    try:
+        expiry_row = db().execute("SELECT expiry FROM orb_summary WHERE session_date=?",
+                                   (session_date.isoformat(),)).fetchone()
+        if expiry_row:
+            fut_key = resolve_future_instrument_key(date.fromisoformat(expiry_row[0]))
+            fut_candles = resample(fetch_fn(fut_key), CANDLE_MINUTES)
+    except Exception as e:
+        if not quiet:
+            alert("REPLAY %s | WARN: could not backfill future contract (%s) - "
+                  "REQUIRE_FUTURES_OI_CONFIRMATION will be skipped for this day." % (session_date, e))
 
-def simulate_day(session_date, atm, sp_high, sp_low, levels, hist_by_key, ce_key, pe_key, oi_by_key=None):
+    return atm, sp_high, sp_low, levels, hist_by_key, ce_key, pe_key, oi_by_key, fut_candles
+
+def simulate_day(session_date, atm, sp_high, sp_low, levels, hist_by_key, ce_key, pe_key, oi_by_key=None, fut_candles=None):
     """Pure simulation over pre-fetched candle data - no network calls, so
     it's safe (and fast) to call this many times over the same fetched data
     with different global strategy flags set, to A/B test rule variants.
@@ -736,7 +825,19 @@ def simulate_day(session_date, atm, sp_high, sp_low, levels, hist_by_key, ce_key
     # Precomputed once per day (not per candle) - see compute_oi_trend_series.
     oi_diff, oi_sorted_ts = compute_oi_trend_series(levels, atm, oi_by_key or {})
     def oi_trend_fn_at(ts):
-        return lambda side: oi_trend_confirms(oi_diff, oi_sorted_ts, ts, side)
+        # min_streak passed explicitly (module-global lookup at CALL time) -
+        # oi_trend_confirms()'s own default parameter is baked in at
+        # function-DEFINITION time (module import), so relying on it here
+        # would silently ignore any later change to OI_TREND_MIN_STREAK -
+        # exactly the bug found 2026-07-24 that made a 1/2/3 sweep produce
+        # identical results (it was always using whatever OI_TREND_MIN_STREAK
+        # equaled when the module was first imported, not what the test
+        # script tried to set afterward).
+        return lambda side: oi_trend_confirms(oi_diff, oi_sorted_ts, ts, side, OI_TREND_MIN_STREAK)
+
+    fut_oi_series = compute_futures_oi_series(sorted(fut_candles or [], key=lambda c: c.ts))
+    def fut_oi_fn_at(ts):
+        return lambda side: futures_oi_confirms(fut_oi_series, ts, side)
 
     ce_series = sorted(hist_by_key.get(ce_key, {}).items())
     pe_map = hist_by_key.get(pe_key, {})
@@ -748,14 +849,15 @@ def simulate_day(session_date, atm, sp_high, sp_low, levels, hist_by_key, ce_key
         if pe_close is not None and ts.time() >= cutoff_time:
             on_candle_close(ts, _Px(ts, ce_close), _Px(ts, pe_close), atm, sp_high, sp_low,
                             levels, st, conn, session_date, ltp_fn=historical_ltp_fn(ts),
-                            source="replay", oi_trend_fn=oi_trend_fn_at(ts))
+                            source="replay", oi_trend_fn=oi_trend_fn_at(ts),
+                            fut_oi_fn=fut_oi_fn_at(ts))
     return st
 
 def run_replay(session_date):
-    atm, sp_high, sp_low, levels, hist_by_key, ce_key, pe_key, oi_by_key = fetch_day_data(session_date)
+    atm, sp_high, sp_low, levels, hist_by_key, ce_key, pe_key, oi_by_key, fut_candles = fetch_day_data(session_date)
     if not hist_by_key or not any(hist_by_key.values()):
         return
-    st = simulate_day(session_date, atm, sp_high, sp_low, levels, hist_by_key, ce_key, pe_key, oi_by_key)
+    st = simulate_day(session_date, atm, sp_high, sp_low, levels, hist_by_key, ce_key, pe_key, oi_by_key, fut_candles)
     if st.signals == 0:
         alert("No trade all day - NEUTRAL state held. That is a win over sentiment.")
 
@@ -788,6 +890,28 @@ def run_live_for_day(session_date):
             for key, oi in pool.map(_fetch_one, ladder_keys):
                 if oi is not None:
                     oi_by_key[key][candle_ts] = oi
+
+    # Single-contract future history, for REQUIRE_FUTURES_OI_CONFIRMATION -
+    # refreshed the same way (once per new 5-min candle close).
+    fut_candles = []
+    fut_key = None
+    try:
+        expiry_row = conn.execute("SELECT expiry FROM orb_summary WHERE session_date=?",
+                                   (session_date.isoformat(),)).fetchone()
+        if expiry_row:
+            fut_key = resolve_future_instrument_key(date.fromisoformat(expiry_row[0]))
+    except Exception as e:
+        alert("LIVE %s | could not resolve future contract (%s) - "
+              "REQUIRE_FUTURES_OI_CONFIRMATION will be skipped." % (session_date, e))
+
+    def refresh_fut_oi():
+        if not fut_key:
+            return
+        try:
+            candles = resample(fetch_intraday_candles(fut_key, 1), CANDLE_MINUTES)
+            fut_candles[:] = candles
+        except Exception:
+            pass   # best-effort - futures_oi_confirms() fails closed on missing data
 
     # Seed today's already-realized PnL/stops from the DB - DayState is
     # otherwise purely in-memory and starts at 0 on every process restart,
@@ -856,10 +980,16 @@ def run_live_for_day(session_date):
                         refresh_oi_for_ts(c.ts)
                         oi_diff, oi_sorted_ts = compute_oi_trend_series(levels, atm, oi_by_key)
                         oi_trend_fn = (lambda side, _d=oi_diff, _s=oi_sorted_ts, _t=c.ts:
-                                      oi_trend_confirms(_d, _s, _t, side))
+                                      oi_trend_confirms(_d, _s, _t, side, OI_TREND_MIN_STREAK))
+                    fut_oi_fn = None
+                    if REQUIRE_FUTURES_OI_CONFIRMATION and c.ts.time() >= FUTURES_OI_VALID_FROM:
+                        refresh_fut_oi()
+                        fut_oi_series = compute_futures_oi_series(sorted(fut_candles, key=lambda x: x.ts))
+                        fut_oi_fn = (lambda side, _s=fut_oi_series, _t=c.ts:
+                                    futures_oi_confirms(_s, _t, side))
                     on_candle_close(c.ts, c, mate, atm, sp_high, sp_low,
                                     levels, st, conn, session_date, ltp_fn=get_ltp,
-                                    source="live", oi_trend_fn=oi_trend_fn)
+                                    source="live", oi_trend_fn=oi_trend_fn, fut_oi_fn=fut_oi_fn)
         except Exception as e:
             alert("live loop error: %s" % e)
         systime.sleep(20)
