@@ -13,6 +13,14 @@ orb_common.DB_PATH = os.path.join(tempfile.gettempdir(), "orb_test.db")
 if os.path.exists(orb_common.DB_PATH):
     os.remove(orb_common.DB_PATH)
 
+# write_state() is called on every simulated candle (via on_candle_close's
+# _snapshot()) - without redirecting this too, every test run silently
+# overwrites the REAL live dashboard's orb_state.json with fake fixture
+# data (found 2026-07-24: a test run mid-session clobbered live state with
+# a synthetic "2 stops, Rs -3120" scenario, making the dashboard/status
+# pings falsely report a fake trade that never happened live).
+orb_common.STATE_PATH = os.path.join(tempfile.gettempdir(), "orb_test_state.json")
+
 # Never let synthetic test trades hit the real Telegram bot, even if a real
 # .env is loaded (orb_common auto-loads .env on import).
 orb_common.TELEGRAM_BOT_TOKEN = ""
@@ -37,6 +45,13 @@ from orb_signal import (DayState, on_candle_close, ladder_lines, build_watch_pai
                         competitor_reference, run_replay, CANDLE_MINUTES)
 from orb_auto import should_run_today_now, next_market_open
 from datetime import timedelta
+
+# The general suite exercises the pre-OI-filter behavior; REQUIRE_OI_TREND_
+# CONFIRMATION defaults to True in production now, but flipping it on here
+# would fail every entry test that doesn't also pass a matching oi_trend_fn
+# (the filter fails closed with none given). Dedicated OI-trend tests below
+# set this locally and restore it before returning to the general suite.
+orb_signal.REQUIRE_OI_TREND_CONFIRMATION = False
 
 SESSION = date(2026, 7, 21)
 ATM = 24200

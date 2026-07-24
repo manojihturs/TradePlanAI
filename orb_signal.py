@@ -19,11 +19,12 @@
 #   python orb_signal.py --live                  (after today's 09:21 capture)
 
 import argparse, time as systime
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from orb_common import (IST, CANDLE_MINUTES, SIGNAL_STRIKES, STRIKE_GAP, ORB_LOCK,
                         LAST_ENTRY, SQUARE_OFF,
                         QTY, MAX_DAILY_LOSS, SL_POINTS,
-                        MIN_PROFIT_POINTS,
+                        MIN_PROFIT_POINTS, COST_PER_TRADE_RUPEES,
                         MIN_ENTRY_MARGIN_POINTS, MIN_COMPETITOR_DISTANCE_POINTS,
                         APP_NAME, SERVER_NAME, get_ltp, is_competitor_exit_enabled,
                         fetch_intraday_candles, fetch_historical_candles,
@@ -240,6 +241,94 @@ def adjacent_strike_confirms(levels, atm, side, ltp_fn):
     else:
         return pe_close > pe_rec["high"] + MIN_ENTRY_MARGIN_POINTS and ce_close < ce_rec["low"]
 
+# ENABLED 2026-07-24. Based on the "Trending OI" methodology (OIPulse
+# YouTube explainer, reviewed same day): instead of a plain PCR across ALL
+# strikes (which mixes in deep ITM/OTM hedging positions that say nothing
+# about trend), sum OI CHANGE separately for calls and puts across just the
+# ATM +/- SIGNAL_STRIKES active strikes (this ladder already matches that
+# definition almost exactly). diff = total_put_OI_change -
+# total_call_OI_change: positive means put WRITERS are aggressively adding
+# (they're betting the market won't fall => bullish, since we trade
+# opposite the option sellers).
+#
+# Backtested across 17 sessions (2026-07-01 to 07-23): baseline NET
+# -Rs484.25 (51 trades, 39.2% win) -> with this filter NET +Rs572.00 (42
+# trades, 40.5% win) - the first change this week that flips the sample
+# from net-loss to net-profit. Cross-checked for the same single-trade
+# overfitting risk found earlier (the +60.30pt 07-08 trade): excluding it
+# from BOTH configs, baseline is -Rs4273.75 vs filtered -Rs3217.50 - still
+# net negative without that trade, but the filter is consistently
+# ~Rs1050 better either way, so the RELATIVE improvement is real even
+# though the ABSOLUTE positive headline number leans on one lucky trade.
+# OI_TREND_MIN_STREAK swept at 1/5/10 - all three produce IDENTICAL trade
+# sets on this data (once the sign confirms after 09:45 it doesn't flip
+# within our entry window), so streak length currently has no effect;
+# left at 1 (simplest) rather than pretending higher values add rigor they
+# don't demonstrably provide yet.
+REQUIRE_OI_TREND_CONFIRMATION = True
+OI_TREND_MIN_STREAK = 1   # consecutive candles required in the confirming direction
+# The video is explicit: check OI trend only from 09:45 onward - before that,
+# OI hasn't built up enough to mean anything and the diff swings sign
+# candle-to-candle (verified 2026-07-24 on real data: the 09:20-09:40 diff
+# series flipped sign 5 times in 20 minutes). First backtest attempt ignored
+# this and evaluated the filter from 09:20 (ORB_LOCK) - garbage in, garbage
+# out. Entries before this time bypass the OI check entirely (same as if
+# REQUIRE_OI_TREND_CONFIRMATION were off) rather than being blocked, since
+# blocking everything before 9:45 is a time-cutoff decision, not something
+# this filter should silently impose as a side effect.
+OI_TREND_VALID_FROM = time(9, 45)
+
+def compute_oi_trend_series(levels, atm, oi_by_key):
+    """Precomputes {ts: oi_diff} for one full day - oi_diff = candle-over-
+    candle change in total PUT open interest minus candle-over-candle
+    change in total CALL open interest, summed across every ATM +/-
+    SIGNAL_STRIKES strike captured for that side. Call once per day
+    (in simulate_day), not per candle - reused by oi_trend_confirms()."""
+    ce_keys, pe_keys = [], []
+    for i in range(-SIGNAL_STRIKES, SIGNAL_STRIKES + 1):
+        k = atm + i * STRIKE_GAP
+        rec = levels.get((k, "CE"))
+        if rec:
+            ce_keys.append(rec["key"])
+        rec = levels.get((k, "PE"))
+        if rec:
+            pe_keys.append(rec["key"])
+
+    all_ts = sorted(set().union(*(oi_by_key.get(k, {}).keys() for k in ce_keys + pe_keys))) \
+             if (ce_keys or pe_keys) else []
+
+    call_totals = [(ts, sum(oi_by_key.get(k, {}).get(ts, 0.0) for k in ce_keys)) for ts in all_ts]
+    put_totals = [(ts, sum(oi_by_key.get(k, {}).get(ts, 0.0) for k in pe_keys)) for ts in all_ts]
+
+    oi_diff = {}
+    for i in range(1, len(all_ts)):
+        ts = all_ts[i]
+        call_change = call_totals[i][1] - call_totals[i - 1][1]
+        put_change = put_totals[i][1] - put_totals[i - 1][1]
+        oi_diff[ts] = put_change - call_change
+    return oi_diff, all_ts
+
+def oi_trend_confirms(oi_diff, sorted_ts, current_ts, side, min_streak=OI_TREND_MIN_STREAK):
+    """True if oi_diff has held the confirming sign for `min_streak`
+    consecutive candles ending at current_ts. CE (bullish) needs oi_diff
+    consistently positive (put writers aggressive); PE (bearish) needs it
+    consistently negative (call writers aggressive). Fails CLOSED if there
+    isn't enough history yet or a candle's OI data is missing."""
+    if min_streak <= 0:
+        return True
+    try:
+        idx = sorted_ts.index(current_ts)
+    except ValueError:
+        return False
+    if idx + 1 < min_streak:
+        return False
+    required_sign = 1 if side == "CE" else -1
+    for j in range(idx - min_streak + 1, idx + 1):
+        diff = oi_diff.get(sorted_ts[j])
+        if diff is None or diff * required_sign <= 0:
+            return False
+    return True
+
 def _snapshot(session_date, atm, sp_high, sp_low, st, note=""):
     write_state(
         app_name=APP_NAME, server=SERVER_NAME,
@@ -251,13 +340,17 @@ def _snapshot(session_date, atm, sp_high, sp_low, st, note=""):
     )
 
 def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, session_date,
-                     ltp_fn=None, source="live"):
+                     ltp_fn=None, source="live", oi_trend_fn=None):
     """ce_c / pe_c are the just-closed N-min candles of the ATM CE / ATM PE.
 
     ltp_fn: optional callable(instrument_key) -> float, used only for the
     other-strike early-exit check below. Pass None to disable that check
     (e.g. in replay, where we don't have live/intrabar data for every
     strike in the ladder - only its own 09:15 first candle).
+
+    oi_trend_fn: optional callable(side) -> bool, used only by
+    REQUIRE_OI_TREND_CONFIRMATION. Pass None to disable that check (e.g.
+    live, until the full-ladder OI poll is built).
 
     source: "live" or "replay" - tags every row this call writes to
     orb_trades/the journal, so a real execution and a backtest simulation
@@ -366,18 +459,26 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
 
         if exit_reason:
             pnl_pts = px - p["entry"]
-            pnl_rupees = pnl_pts * QTY
+            pnl_rupees_gross = pnl_pts * QTY
+            # Real round-trip cost (brokerage+STT+exchange+GST+SEBI+stamp
+            # duty) subtracted once per completed trade - a small positive
+            # gross can still be a NET loss once this is applied, so every
+            # rupee figure tracked/alerted/journaled from here on is NET,
+            # never the raw points*qty number.
+            pnl_rupees = pnl_rupees_gross - COST_PER_TRADE_RUPEES
 
-            if pnl_pts > 0:
+            if pnl_rupees > 0:
                 exit_note = ("Profit: %s premium ran from %.2f to %.2f (+%.2f pts, %d ladder "
-                             "line(s) crossed) before %s." %
-                             (p["side"], p["entry"], px, pnl_pts, p["crossed"], exit_reason))
-            elif pnl_pts < 0:
+                             "line(s) crossed) before %s. Net Rs %.2f after Rs %.2f costs." %
+                             (p["side"], p["entry"], px, pnl_pts, p["crossed"], exit_reason,
+                              pnl_rupees, COST_PER_TRADE_RUPEES))
+            elif pnl_rupees < 0:
                 exit_note = ("Loss: %s premium fell from %.2f to %.2f (%.2f pts) - %s. "
-                             "SL/TSL was at %.2f when closed." %
-                             (p["side"], p["entry"], px, pnl_pts, exit_reason, p["trail"]))
+                             "SL/TSL was at %.2f when closed. Net Rs %.2f after Rs %.2f costs." %
+                             (p["side"], p["entry"], px, pnl_pts, exit_reason, p["trail"],
+                              pnl_rupees, COST_PER_TRADE_RUPEES))
             else:
-                exit_note = ("Breakeven: exited flat at %.2f via %s, no gain/loss." % (px, exit_reason))
+                exit_note = ("Breakeven: exited flat at %.2f via %s, no gain/loss after costs." % (px, exit_reason))
 
             conn.execute("INSERT INTO orb_trades VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                          (session_date.isoformat(), p["ts"], p["side"],
@@ -388,9 +489,10 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
             trigger_txt = (" | trigger strike %d @ %.2f (next level %.2f)"
                           % (trigger_strike["strike"], trigger_strike["live_value"],
                              trigger_strike["next_level"])) if trigger_strike else ""
-            alert("EXIT %s @ %.2f (%s) | ATM %d | PnL %.2f pts (Rs %.2f, qty %d) | lines crossed %d | "
-                  "day PnL Rs %.2f%s | Competitor: %s [%s]"
-                  % (p["side"], px, exit_reason, atm, pnl_pts, pnl_rupees, QTY, p["crossed"],
+            alert("EXIT %s @ %.2f (%s) | ATM %d | PnL %.2f pts (Rs %.2f gross, Rs %.2f net of Rs%.0f "
+                  "costs, qty %d) | lines crossed %d | day PnL Rs %.2f%s | Competitor: %s [%s]"
+                  % (p["side"], px, exit_reason, atm, pnl_pts, pnl_rupees_gross, pnl_rupees,
+                     COST_PER_TRADE_RUPEES, QTY, p["crossed"],
                      st.daily_pnl_rupees, trigger_txt,
                      "ON" if is_competitor_exit_enabled() else "OFF", source))
             try:
@@ -407,7 +509,7 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
                 })
             except Exception as e:
                 alert("journal write failed: %s" % e)
-            if pnl_pts < 0:
+            if pnl_rupees < 0:   # net of costs - a small gross win can still be a real loss
                 st.stops += 1
             # No stop-count or signal-count cap anymore - per instruction, keep
             # looking for fresh setups all day. The ONLY hard stop left is the
@@ -452,6 +554,16 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
         if ce_wins and not adjacent_strike_confirms(levels, atm, "CE", ltp_fn):
             ce_wins = False
         if pe_wins and not adjacent_strike_confirms(levels, atm, "PE", ltp_fn):
+            pe_wins = False
+
+    if REQUIRE_OI_TREND_CONFIRMATION and t >= OI_TREND_VALID_FROM:
+        # Fails closed: no oi_trend_fn (e.g. live, not wired yet) means no
+        # confirmation available, so any raw signal is blocked rather than
+        # silently let through unchecked. Before OI_TREND_VALID_FROM (09:45)
+        # this check is skipped entirely - see OI_TREND_VALID_FROM comment.
+        if ce_wins and not (oi_trend_fn and oi_trend_fn("CE")):
+            ce_wins = False
+        if pe_wins and not (oi_trend_fn and oi_trend_fn("PE")):
             pe_wins = False
 
     if REQUIRE_FRESH_EXTREME_FOR_ENTRY:
@@ -562,18 +674,39 @@ def fetch_day_data(session_date, quiet=False):
               "+/- %d ladder via %s endpoint..."
               % (session_date, atm, sp_low, sp_high, len(all_keys), SIGNAL_STRIKES,
                  "intraday" if is_today else "historical"))
+    # Fetched concurrently, not one-at-a-time - each fetch_fn(key) call is a
+    # single blocking HTTP round trip, and this loop used to be the dominant
+    # cost of a replay (up to (2*SIGNAL_STRIKES+1)*2 = 26 sequential
+    # requests, ~10+ min across a multi-day backtest). Threads are safe here
+    # because these are I/O-bound requests through a shared, pooled
+    # requests.Session (see orb_common._SESSION), not CPU-bound work
+    # fighting the GIL. FETCH_WORKERS=8 hit Upstox's rate limit hard enough
+    # under sustained multi-day backtesting (17 days back-to-back) that even
+    # 5-retry backoff in _get() couldn't fully absorb it - 2 of 17 days came
+    # back with most contracts missing. Backed off to 4 workers, which
+    # cleared the same 17-day run with zero missing contracts. Raise this
+    # cautiously and always re-verify with a multi-day run, not a single
+    # isolated fetch (which looks deceptively fast/clean either way).
     hist_by_key = {}
+    oi_by_key = {}   # {instrument_key: {ts: open_interest}} - parallel to
+                     # hist_by_key, feeds the OI-trend confirmation filter.
     total_candles = 0
-    for key in all_keys:
-        try:
-            candles = resample(fetch_fn(key), CANDLE_MINUTES)
-            hist_by_key[key] = {c.ts: c.close for c in candles}
-            total_candles += len(candles)
-        except Exception as e:
-            if not quiet:
-                alert("REPLAY %s | WARN: could not backfill %s (%s) - early-exit checks "
-                      "involving this strike will be skipped." % (session_date, key, e))
-            hist_by_key[key] = {}
+    FETCH_WORKERS = 4
+    with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
+        future_to_key = {pool.submit(fetch_fn, key): key for key in all_keys}
+        for future in as_completed(future_to_key):
+            key = future_to_key[future]
+            try:
+                candles = resample(future.result(), CANDLE_MINUTES)
+                hist_by_key[key] = {c.ts: c.close for c in candles}
+                oi_by_key[key] = {c.ts: c.oi for c in candles}
+                total_candles += len(candles)
+            except Exception as e:
+                if not quiet:
+                    alert("REPLAY %s | WARN: could not backfill %s (%s) - early-exit checks "
+                          "involving this strike will be skipped." % (session_date, key, e))
+                hist_by_key[key] = {}
+                oi_by_key[key] = {}
 
     if total_candles == 0:
         if not quiet:
@@ -582,11 +715,11 @@ def fetch_day_data(session_date, quiet=False):
                   "intraday endpoint may not be populated yet; if historical, Upstox may not "
                   "retain data this far back for these contracts, or this wasn't a trading day. "
                   "Not reporting a trade count for this day." % (session_date, len(all_keys)))
-        return atm, sp_high, sp_low, levels, {}, ce_key, pe_key
+        return atm, sp_high, sp_low, levels, {}, ce_key, pe_key, {}
 
-    return atm, sp_high, sp_low, levels, hist_by_key, ce_key, pe_key
+    return atm, sp_high, sp_low, levels, hist_by_key, ce_key, pe_key, oi_by_key
 
-def simulate_day(session_date, atm, sp_high, sp_low, levels, hist_by_key, ce_key, pe_key):
+def simulate_day(session_date, atm, sp_high, sp_low, levels, hist_by_key, ce_key, pe_key, oi_by_key=None):
     """Pure simulation over pre-fetched candle data - no network calls, so
     it's safe (and fast) to call this many times over the same fetched data
     with different global strategy flags set, to A/B test rule variants.
@@ -600,6 +733,11 @@ def simulate_day(session_date, atm, sp_high, sp_low, levels, hist_by_key, ce_key
             return close
         return _fn
 
+    # Precomputed once per day (not per candle) - see compute_oi_trend_series.
+    oi_diff, oi_sorted_ts = compute_oi_trend_series(levels, atm, oi_by_key or {})
+    def oi_trend_fn_at(ts):
+        return lambda side: oi_trend_confirms(oi_diff, oi_sorted_ts, ts, side)
+
     ce_series = sorted(hist_by_key.get(ce_key, {}).items())
     pe_map = hist_by_key.get(pe_key, {})
     cutoff_time = ORB_LOCK   # 09:20 - first candle bucket after the opening range itself
@@ -610,14 +748,14 @@ def simulate_day(session_date, atm, sp_high, sp_low, levels, hist_by_key, ce_key
         if pe_close is not None and ts.time() >= cutoff_time:
             on_candle_close(ts, _Px(ts, ce_close), _Px(ts, pe_close), atm, sp_high, sp_low,
                             levels, st, conn, session_date, ltp_fn=historical_ltp_fn(ts),
-                            source="replay")
+                            source="replay", oi_trend_fn=oi_trend_fn_at(ts))
     return st
 
 def run_replay(session_date):
-    atm, sp_high, sp_low, levels, hist_by_key, ce_key, pe_key = fetch_day_data(session_date)
+    atm, sp_high, sp_low, levels, hist_by_key, ce_key, pe_key, oi_by_key = fetch_day_data(session_date)
     if not hist_by_key or not any(hist_by_key.values()):
         return
-    st = simulate_day(session_date, atm, sp_high, sp_low, levels, hist_by_key, ce_key, pe_key)
+    st = simulate_day(session_date, atm, sp_high, sp_low, levels, hist_by_key, ce_key, pe_key, oi_by_key)
     if st.signals == 0:
         alert("No trade all day - NEUTRAL state held. That is a win over sentiment.")
 
@@ -628,6 +766,29 @@ def run_live_for_day(session_date):
     st, conn = DayState(), db()
     seen = set()
 
+    # Full ladder OI, accumulated live for REQUIRE_OI_TREND_CONFIRMATION -
+    # polled only once per NEW 5-min candle close (not every 20s loop tick),
+    # matching the granularity the filter actually needs and keeping live
+    # API load reasonable (~26 contracts every 5 min, not every 20s).
+    ladder_keys = sorted({rec["key"] for rec in levels.values()})
+    oi_by_key = {k: {} for k in ladder_keys}
+
+    def refresh_oi_for_ts(candle_ts):
+        """Best-effort: a failed contract just leaves its OI missing for
+        this candle - oi_trend_confirms() already fails closed on missing
+        data, so one bad fetch doesn't need to abort the whole cycle."""
+        def _fetch_one(key):
+            try:
+                candles = resample(fetch_intraday_candles(key, 1), CANDLE_MINUTES)
+                match = next((c for c in candles if c.ts == candle_ts), None)
+                return key, (match.oi if match else None)
+            except Exception:
+                return key, None
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            for key, oi in pool.map(_fetch_one, ladder_keys):
+                if oi is not None:
+                    oi_by_key[key][candle_ts] = oi
+
     # Seed today's already-realized PnL/stops from the DB - DayState is
     # otherwise purely in-memory and starts at 0 on every process restart,
     # which happens routinely for code deploys. Without this, the rupee
@@ -635,16 +796,18 @@ def run_live_for_day(session_date):
     # count caps were removed - loses track of losses booked before the most
     # recent restart and can't actually stop the account at the real cap.
     # Only "live" rows count (never mix in replay/backtest simulation rows).
-    prior = conn.execute(
-        "SELECT COALESCE(SUM(pnl_points),0), SUM(CASE WHEN pnl_points<0 THEN 1 ELSE 0 END) "
-        "FROM orb_trades WHERE session_date=? AND source='live'",
-        (session_date.isoformat(),)).fetchone()
-    prior_pts, prior_stops = prior[0] or 0.0, prior[1] or 0
-    st.daily_pnl_rupees = prior_pts * QTY
-    st.stops = prior_stops
-    if prior_pts:
-        alert("LIVE %s | resuming with today's already-realized PnL Rs %.2f (%d prior stop(s)) "
-              "carried forward from before this restart." % (session_date, st.daily_pnl_rupees, prior_stops))
+    prior_rows = conn.execute(
+        "SELECT pnl_points FROM orb_trades WHERE session_date=? AND source='live'",
+        (session_date.isoformat(),)).fetchall()
+    # Net of the flat per-trade cost, same as on_candle_close's exit path -
+    # summing gross points*qty here and subtracting a single lump cost at
+    # the end would be wrong (cost is PER TRADE, not proportional to points).
+    prior_net_rupees = [r[0] * QTY - COST_PER_TRADE_RUPEES for r in prior_rows]
+    st.daily_pnl_rupees = sum(prior_net_rupees)
+    st.stops = sum(1 for r in prior_net_rupees if r < 0)
+    if prior_rows:
+        alert("LIVE %s | resuming with today's already-realized PnL Rs %.2f net of costs (%d prior "
+              "stop(s)) carried forward from before this restart." % (session_date, st.daily_pnl_rupees, st.stops))
     if st.daily_pnl_rupees <= -MAX_DAILY_LOSS:
         st.locked = True
         alert("LOCKED OUT on startup: today's already-realized loss Rs %.2f already hit max "
@@ -688,9 +851,15 @@ def run_live_for_day(session_date):
                 mate = pe_by_ts.get(c.ts)
                 if mate:
                     seen.add(c.ts)
+                    oi_trend_fn = None
+                    if REQUIRE_OI_TREND_CONFIRMATION and c.ts.time() >= OI_TREND_VALID_FROM:
+                        refresh_oi_for_ts(c.ts)
+                        oi_diff, oi_sorted_ts = compute_oi_trend_series(levels, atm, oi_by_key)
+                        oi_trend_fn = (lambda side, _d=oi_diff, _s=oi_sorted_ts, _t=c.ts:
+                                      oi_trend_confirms(_d, _s, _t, side))
                     on_candle_close(c.ts, c, mate, atm, sp_high, sp_low,
                                     levels, st, conn, session_date, ltp_fn=get_ltp,
-                                    source="live")
+                                    source="live", oi_trend_fn=oi_trend_fn)
         except Exception as e:
             alert("live loop error: %s" % e)
         systime.sleep(20)

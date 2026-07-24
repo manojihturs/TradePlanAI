@@ -10,5 +10,7 @@ trade_journal.xlsx
 ~$trade_journal.xlsx
 ui.log
 orb_auto_run.log
+orb_auto_run.log.err
 orb_ui_run.log
 ui_run.log
+watchdog.log

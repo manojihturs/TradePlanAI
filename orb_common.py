@@ -2,7 +2,7 @@
 # Auth: set env var UPSTOX_ACCESS_TOKEN before running.
 # Requires: pip install requests
 
-import gzip, io, json, logging, os, sqlite3
+import gzip, io, json, logging, os, sqlite3, time as _time
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -39,13 +39,29 @@ LOTS             = int(os.environ.get("ORB_LOTS", "1"))
 QTY              = LOT_SIZE * LOTS
 INITIAL_CAPITAL  = float(os.environ.get("ORB_CAPITAL", "50000"))
 MAX_DAILY_LOSS   = float(os.environ.get("ORB_MAX_DAILY_LOSS", "2500"))  # rupees, 2000-3000 range
-# Risk budget per trade so that MAX_STOPS_PER_DAY losers exhausts MAX_DAILY_LOSS.
-RISK_PER_TRADE_RUPEES = MAX_DAILY_LOSS / MAX_STOPS_PER_DAY
+# Per-trade risk budget - INTENTIONALLY its own knob, not derived from
+# MAX_DAILY_LOSS. They used to be coupled (RISK_PER_TRADE_RUPEES =
+# MAX_DAILY_LOSS / MAX_STOPS_PER_DAY), which silently blew out the per-trade
+# stop-loss to ~769pts (effectively SL=0, no stop at all) the moment
+# MAX_DAILY_LOSS was raised for the 2026-07-24 unlimited-trades test day -
+# raising the account-level lockout should never change what any single
+# trade risks. Defaults to the original Rs1250/trade (~19.2pts) regardless
+# of what MAX_DAILY_LOSS is set to.
+RISK_PER_TRADE_RUPEES = float(os.environ.get("ORB_RISK_PER_TRADE", "1250"))
 SL_POINTS        = RISK_PER_TRADE_RUPEES / QTY          # initial stop, in premium points
 # Minimum net premium points a winning trade must lock in once the TSL
 # activates, so a "win" clears exchange fees/STT/brokerage instead of exiting
 # flat (or worse) at plain breakeven.
 MIN_PROFIT_POINTS = float(os.environ.get("ORB_MIN_PROFIT_POINTS", "3"))
+# Real round-trip transaction cost per trade (brokerage + STT + exchange
+# transaction charges + GST + SEBI fees + stamp duty, entry AND exit
+# combined) - user-reported real-world figure, Rs120-140/trade; 130 is the
+# midpoint. This is a FLAT per-trade cost, not proportional to qty or
+# points, so it must be subtracted once per completed round trip, not
+# folded into the points-based P&L math anywhere else. Every prior backtest
+# report this week quoted GROSS points*qty with no cost deduction - that
+# overstates real profitability, especially for higher-trade-count configs.
+COST_PER_TRADE_RUPEES = float(os.environ.get("ORB_COST_PER_TRADE", "130"))
 # Minimum points the traded side's own close must clear its 9:15 extreme by,
 # on top of the existing boolean check, before triple confirmation counts.
 # Found in a 9-day backtest: entries with <5pt margin on the traded side's
@@ -143,10 +159,43 @@ def _headers():
         raise RuntimeError("Set UPSTOX_ACCESS_TOKEN environment variable first.")
     return {"Authorization": "Bearer " + token, "Accept": "application/json"}
 
-def _get(url, params=None):
-    r = requests.get(url, headers=_headers(), params=params, timeout=20)
-    r.raise_for_status()
-    return r.json()
+# Reused across every call instead of a fresh requests.get() each time - a
+# plain requests.get() opens a brand new TCP+TLS connection per call, which
+# dominates latency when fetching dozens of contracts back to back (as
+# fetch_day_data's ladder backfill does). A session keeps connections alive
+# and pools them, cutting per-request overhead meaningfully even before any
+# parallelism. Thread-safe for concurrent .get() calls (requests.Session
+# uses a connection pool internally), which is what makes it safe to pair
+# with the parallel ladder fetch in orb_signal.fetch_day_data().
+_SESSION = requests.Session()
+_SESSION.mount("https://", requests.adapters.HTTPAdapter(pool_maxsize=20, pool_connections=20))
+
+def _get(url, params=None, max_retries=10):
+    """Retries on 429 (rate limit) and 5xx with exponential backoff, honoring
+    a Retry-After header if Upstox sends one. WITHOUT this, a rate-limited
+    request just raised straight through to the caller, which in
+    fetch_day_data's per-contract try/except was silently swallowed as
+    "0 candles for this contract" - indistinguishable from a real data gap,
+    and capable of quietly corrupting a backtest's results with no visible
+    warning (found 2026-07-24: parallelizing the ladder fetch made this
+    trivial to trigger - 17 days x 26 contracts back-to-back exceeded the
+    rate limit partway through and later days silently came back empty)."""
+    last_exc = None
+    for attempt in range(max_retries):
+        try:
+            r = _SESSION.get(url, headers=_headers(), params=params, timeout=20)
+            if r.status_code == 429 or r.status_code >= 500:
+                retry_after = r.headers.get("Retry-After")
+                wait = float(retry_after) if retry_after else (2 ** attempt)
+                _time.sleep(min(wait, 30))
+                last_exc = requests.HTTPError("HTTP %d on attempt %d" % (r.status_code, attempt + 1))
+                continue
+            r.raise_for_status()
+            return r.json()
+        except (requests.ConnectionError, requests.Timeout) as e:
+            last_exc = e
+            _time.sleep(min(2 ** attempt, 30))
+    raise last_exc if last_exc else RuntimeError("_get failed with no captured exception")
 
 def load_instrument_master(force_refresh=False):
     today_tag = date.today().isoformat()
@@ -247,13 +296,19 @@ class Candle:
     low: float
     close: float
     volume: float
+    oi: float = 0.0   # open interest - row[6] of the raw candle, present for
+                       # F&O instruments (futures and options), absent for
+                       # the spot index. Defaults to 0.0 so existing callers
+                       # that only unpack the first 6 positional fields keep
+                       # working unchanged.
 
 def _parse_candles(payload):
     out = []
     for row in payload.get("data", {}).get("candles", []):
         ts = datetime.fromisoformat(row[0]).astimezone(IST)
+        oi = float(row[6]) if len(row) > 6 else 0.0
         out.append(Candle(ts, float(row[1]), float(row[2]),
-                          float(row[3]), float(row[4]), float(row[5])))
+                          float(row[3]), float(row[4]), float(row[5]), oi))
     out.sort(key=lambda c: c.ts)   # Upstox returns newest-first
     return out
 
@@ -287,13 +342,16 @@ def resample(candles_1m, minutes):
             continue
         b = anchor + timedelta(minutes=(offset // minutes) * minutes)
         if b not in buckets:
-            buckets[b] = Candle(b, c.open, c.high, c.low, c.close, c.volume)
+            buckets[b] = Candle(b, c.open, c.high, c.low, c.close, c.volume, c.oi)
         else:
             agg = buckets[b]
             agg.high = max(agg.high, c.high)
             agg.low = min(agg.low, c.low)
             agg.close = c.close
             agg.volume += c.volume
+            agg.oi = c.oi   # OI is a point-in-time outstanding-contracts level,
+                            # not a flow like volume - take the LAST 1-min
+                            # candle's OI in the bucket, never sum it.
     return [buckets[k] for k in sorted(buckets)]
 
 def db():
