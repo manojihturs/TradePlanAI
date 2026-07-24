@@ -396,6 +396,51 @@ def futures_oi_confirms(fut_oi_series, ts, side):
         return False
     return cls == "long_buildup" if side == "CE" else cls == "short_buildup"
 
+# Off by default - supporting strategy #3 (2026-07-24): require the
+# underlying FUTURE's own price to be on the correct side of its intraday
+# VWAP (volume-weighted average price) at entry time. This is the "chart
+# setup" cross-check the OI Trending video itself insists on: OI trend
+# alone only tells you the DIRECTION of conviction, not whether price
+# action agrees right now - the video's explicit example skips a trade
+# entirely when OI sentiment and price structure disagree. CE_WINS needs
+# the future trading ABOVE its cumulative VWAP; PE_WINS needs it BELOW.
+# Computed off the future's own OHLCV (real traded volume, unlike the spot
+# index) - the same one contract already fetched for
+# REQUIRE_FUTURES_OI_CONFIRMATION, so this costs nothing extra.
+#
+# Backtested across the same 17 sessions: standalone, it barely filters
+# anything (51/51 trades pass, same count as the unfiltered baseline -
+# our breakout entries already tend to agree with VWAP direction on their
+# own) and nets slightly WORSE than baseline (-Rs640.25 vs -Rs484.25).
+# Stacked on top of the deployed Futures OI filter it adds a ~Rs88
+# improvement (Rs2574.00 vs Rs2486.25) on the identical 31 trades - noise,
+# not a real signal. Left implemented and off; not a useful filter on
+# this data as currently defined (typical-price cumulative VWAP on the
+# future). A tighter/different VWAP formulation might do better, but
+# there's no evidence for THIS one, so it doesn't ship.
+REQUIRE_VWAP_CONFIRMATION = False
+
+def compute_vwap_series(fut_candles):
+    """Cumulative intraday VWAP, reset at the start of each call (one day's
+    candles in, one day's VWAP series out) - standard typical-price VWAP:
+    cumsum(((high+low+close)/3) * volume) / cumsum(volume)."""
+    out = {}
+    cum_pv = cum_vol = 0.0
+    for c in sorted(fut_candles, key=lambda x: x.ts):
+        typical = (c.high + c.low + c.close) / 3.0
+        cum_pv += typical * c.volume
+        cum_vol += c.volume
+        out[c.ts] = (cum_pv / cum_vol) if cum_vol > 0 else c.close
+    return out
+
+def vwap_confirms(vwap_series, fut_close_series, ts, side):
+    """Fails closed if either series is missing data at ts."""
+    vwap = vwap_series.get(ts)
+    price = fut_close_series.get(ts)
+    if vwap is None or price is None:
+        return False
+    return price > vwap if side == "CE" else price < vwap
+
 def _snapshot(session_date, atm, sp_high, sp_low, st, note=""):
     write_state(
         app_name=APP_NAME, server=SERVER_NAME,
@@ -407,7 +452,7 @@ def _snapshot(session_date, atm, sp_high, sp_low, st, note=""):
     )
 
 def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, session_date,
-                     ltp_fn=None, source="live", oi_trend_fn=None, fut_oi_fn=None):
+                     ltp_fn=None, source="live", oi_trend_fn=None, fut_oi_fn=None, vwap_fn=None):
     """ce_c / pe_c are the just-closed N-min candles of the ATM CE / ATM PE.
 
     ltp_fn: optional callable(instrument_key) -> float, used only for the
@@ -639,6 +684,12 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
         if pe_wins and not (fut_oi_fn and fut_oi_fn("PE")):
             pe_wins = False
 
+    if REQUIRE_VWAP_CONFIRMATION:
+        if ce_wins and not (vwap_fn and vwap_fn("CE")):
+            ce_wins = False
+        if pe_wins and not (vwap_fn and vwap_fn("PE")):
+            pe_wins = False
+
     if REQUIRE_FRESH_EXTREME_FOR_ENTRY:
         # Block a stale re-entry: only allow the signal through if spot is
         # still within STALE_REENTRY_PULLBACK_POINTS of the best level this
@@ -839,6 +890,12 @@ def simulate_day(session_date, atm, sp_high, sp_low, levels, hist_by_key, ce_key
     def fut_oi_fn_at(ts):
         return lambda side: futures_oi_confirms(fut_oi_series, ts, side)
 
+    fut_sorted = sorted(fut_candles or [], key=lambda c: c.ts)
+    vwap_series = compute_vwap_series(fut_sorted)
+    fut_close_series = {c.ts: c.close for c in fut_sorted}
+    def vwap_fn_at(ts):
+        return lambda side: vwap_confirms(vwap_series, fut_close_series, ts, side)
+
     ce_series = sorted(hist_by_key.get(ce_key, {}).items())
     pe_map = hist_by_key.get(pe_key, {})
     cutoff_time = ORB_LOCK   # 09:20 - first candle bucket after the opening range itself
@@ -850,7 +907,7 @@ def simulate_day(session_date, atm, sp_high, sp_low, levels, hist_by_key, ce_key
             on_candle_close(ts, _Px(ts, ce_close), _Px(ts, pe_close), atm, sp_high, sp_low,
                             levels, st, conn, session_date, ltp_fn=historical_ltp_fn(ts),
                             source="replay", oi_trend_fn=oi_trend_fn_at(ts),
-                            fut_oi_fn=fut_oi_fn_at(ts))
+                            fut_oi_fn=fut_oi_fn_at(ts), vwap_fn=vwap_fn_at(ts))
     return st
 
 def run_replay(session_date):
@@ -982,14 +1039,25 @@ def run_live_for_day(session_date):
                         oi_trend_fn = (lambda side, _d=oi_diff, _s=oi_sorted_ts, _t=c.ts:
                                       oi_trend_confirms(_d, _s, _t, side, OI_TREND_MIN_STREAK))
                     fut_oi_fn = None
-                    if REQUIRE_FUTURES_OI_CONFIRMATION and c.ts.time() >= FUTURES_OI_VALID_FROM:
+                    fut_oi_needed = REQUIRE_FUTURES_OI_CONFIRMATION and c.ts.time() >= FUTURES_OI_VALID_FROM
+                    if fut_oi_needed:
                         refresh_fut_oi()
                         fut_oi_series = compute_futures_oi_series(sorted(fut_candles, key=lambda x: x.ts))
                         fut_oi_fn = (lambda side, _s=fut_oi_series, _t=c.ts:
                                     futures_oi_confirms(_s, _t, side))
+                    vwap_fn = None
+                    if REQUIRE_VWAP_CONFIRMATION:
+                        if not fut_oi_needed:   # avoid double-fetching the same contract
+                            refresh_fut_oi()
+                        fut_sorted = sorted(fut_candles, key=lambda x: x.ts)
+                        vwap_series = compute_vwap_series(fut_sorted)
+                        fut_close_series = {x.ts: x.close for x in fut_sorted}
+                        vwap_fn = (lambda side, _v=vwap_series, _c=fut_close_series, _t=c.ts:
+                                  vwap_confirms(_v, _c, _t, side))
                     on_candle_close(c.ts, c, mate, atm, sp_high, sp_low,
                                     levels, st, conn, session_date, ltp_fn=get_ltp,
-                                    source="live", oi_trend_fn=oi_trend_fn, fut_oi_fn=fut_oi_fn)
+                                    source="live", oi_trend_fn=oi_trend_fn, fut_oi_fn=fut_oi_fn,
+                                    vwap_fn=vwap_fn)
         except Exception as e:
             alert("live loop error: %s" % e)
         systime.sleep(20)
