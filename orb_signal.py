@@ -147,6 +147,59 @@ def competitor_reference(levels, atm, our_side, entry):
         level = raw_level
     return k, level
 
+# ---------------------------------------------------------------------------
+# Ladder-pivot SL/TSL mode (2026-07-25, under review - OFF by default).
+#
+# Trader's rule from live chart review: SL should not be a fixed points
+# value, it should be the nearest same-side strike level BEHIND entry (e.g.
+# entry on 23800CE, SL = 23750CE high 133.45 - the "previous position/pivot"
+# that price already cleared to get here). As the trade advances through
+# each opposite-side ladder line (the existing p["lines"] targets), the SL
+# ratchets forward to the same-side high one rung closer to that new price -
+# i.e. always trail behind the LAST rung already cleared, never a flat
+# points offset. And per instruction, do NOT exit at LINE 1 the way the
+# default competitor/LINE-1 rule does (see "confirmed win, exit immediately"
+# above) - keep riding, ladder rung by rung, for "maximum profit", and only
+# get out on SL/TSL hit or the square-off cutoff.
+#
+# Gated behind MAX_PROFIT_LADDER_TRAIL so default live/replay behavior is
+# completely unchanged until this is backtested and explicitly turned on.
+MAX_PROFIT_LADDER_TRAIL = False
+
+def pivot_ladder(levels, atm, winning_side):
+    """Same-side HIGH at every strike ATM +/- SIGNAL_STRIKES, ascending by
+    level - the 'previous pivot' rungs used as SL/TSL anchors under
+    MAX_PROFIT_LADDER_TRAIL. Mirrors ladder_strikes_ordered's shape/sort but
+    reads levels[(K, winning_side)]["high"] (our OWN side, at other
+    strikes) instead of the opposite side's low - this is the same field
+    competitor_reference() already reads for a single strike, generalized
+    across the whole ladder so SL can ratchet through more than one rung."""
+    out = []
+    for i in range(-SIGNAL_STRIKES, SIGNAL_STRIKES + 1):
+        if i == 0:
+            continue
+        k = atm + i * STRIKE_GAP
+        rec = levels.get((k, winning_side))
+        if rec:
+            out.append({"strike": k, "key": rec["key"], "level": rec["high"]})
+    out.sort(key=lambda d: d["level"])
+    return out
+
+def initial_pivot_sl(levels, atm, side, entry, fallback):
+    """Highest same-side pivot level that is still BELOW entry (the nearest
+    rung already cleared to get here) - that's the initial SL under
+    MAX_PROFIT_LADDER_TRAIL. Falls back to the normal fixed-points SL if no
+    pivot sits below entry (e.g. a trade that fires very close to ATM)."""
+    below = [d["level"] for d in pivot_ladder(levels, atm, side) if d["level"] < entry]
+    return max(below) if below else fallback
+
+def next_pivot_sl(levels, atm, side, px, current_sl):
+    """Ratchets the SL up to the highest pivot rung still below the current
+    price px, but never lower than the SL already held (a ratchet only ever
+    moves forward, same guarantee as the existing MIN_PROFIT_POINTS trail)."""
+    below = [d["level"] for d in pivot_ladder(levels, atm, side) if d["level"] < px]
+    return max(below + [current_sl]) if below else current_sl
+
 class DayState:
     def __init__(self):
         self.position = None          # dict when in a trade
@@ -537,7 +590,16 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
         # exit signal, immediately, so the machine is free to look for the
         # next opportunity right away instead of riding one position and
         # hoping for more.
-        if not exit_reason and p["lines"] and px >= p["lines"][0]:
+        if MAX_PROFIT_LADDER_TRAIL:
+            # Ride the ladder instead of exiting at LINE 1: each rung crossed
+            # just ratchets the SL up to the nearest pivot behind current
+            # price and pops that rung off the target list, so the next
+            # candle is judged against the next rung out.
+            while p["lines"] and px >= p["lines"][0]:
+                p["crossed"] += 1
+                p["lines"].pop(0)
+            p["trail"] = next_pivot_sl(levels, atm, p["side"], px, p["trail"])
+        elif not exit_reason and p["lines"] and px >= p["lines"][0]:
             crossed = p["lines"][0]
             p["crossed"] += 1
             exit_reason = "LINE 1 target hit (%.2f) - confirmed, exit now" % crossed
@@ -741,9 +803,11 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
         # trend progress.
         future_lines = [x for x in ladder_lines(levels, atm, side) if x > entry]
         competitor_strike, competitor_level = competitor_reference(levels, atm, side, entry)
+        initial_sl = (initial_pivot_sl(levels, atm, side, entry, max(0.0, entry - SL_POINTS))
+                      if MAX_PROFIT_LADDER_TRAIL else max(0.0, entry - SL_POINTS))
         st.position = {
             "side": side, "entry": entry, "ts": ts.isoformat(),
-            "trail": max(0.0, entry - SL_POINTS),   # initial SL: fixed rupee risk budget
+            "trail": initial_sl,   # fixed rupee risk budget, or previous pivot under MAX_PROFIT_LADDER_TRAIL
             "lines": future_lines,
             "watch_pairs": build_watch_pairs(levels, atm, side),
             "competitor_strike": competitor_strike, "competitor_level": competitor_level,
