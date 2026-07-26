@@ -26,6 +26,8 @@ from typing import Dict, List, Mapping, Optional
 
 from strategy.entry_signal import Candle, EntrySignal, EntrySignalDetector, TradeSide
 from strategy.exit_signal import ExitLevels
+from strategy.ladder_expansion import ensure_exit_levels
+from strategy.level_capture import FirstCandleFetcher, LevelCapture
 from strategy.paper_trading import PaperTradingEngine, Trade
 from strategy.position_manager import Position, PositionManager
 from strategy.premium_mapping import PremiumMapping
@@ -119,10 +121,24 @@ def _candle_for(entry_or_position_side: TradeSide, strike: int, ts: datetime,
 
 def run_replay(
     mapping: PremiumMapping, ce_series: CandleSeries, pe_series: CandleSeries,
+    capture: Optional[LevelCapture] = None, strike_gap: Optional[int] = None,
+    fetch_first_candle: Optional[FirstCandleFetcher] = None,
 ) -> BacktestResult:
     """Replay one session's candles through Modules 3-6, in order.
 
     Args:
+        capture, strike_gap, fetch_first_candle: Optional - supply all
+            three together to enable Module 8's ladder expansion (an
+            entry at the edge of the captured range with no adjacent
+            rung for its Mapped Stop Loss or Target fetches one more
+            strike and extends the ladder, rather than the trade being
+            skipped - per instruction, only a genuine broker-data
+            failure is allowed to skip a valid signal). If any of the
+            three is omitted, behavior is EXACTLY as before this
+            capability was added: an edge-strike entry with no
+            adjacent rung raises ``exit_signal.ExitSignalError`` from
+            inside ``position_manager.PositionManager.open`` (Module 5,
+            unmodified).
         mapping: The frozen ``PremiumMapping`` (Module 2) for this session.
         ce_series: Every captured strike's full CE candle history for
             the session, strike -> {timestamp -> Candle}.
@@ -181,6 +197,17 @@ def run_replay(
             signals = detector.process_candle(ts, ce_candles, pe_candles)
             chosen = _select_signal(signals)
             if chosen is not None:
+                expansion_enabled = (capture is not None and strike_gap is not None
+                                      and fetch_first_candle is not None)
+                if expansion_enabled:
+                    # Module 8: ensures the ladder has whatever rung(s) the
+                    # Mapped SL/Target need, expanding on demand rather than
+                    # skipping the trade. `mapping`/`capture` here are
+                    # reassigned to the (possibly extended) returned copies
+                    # so later candles in THIS replay keep using them.
+                    _levels, capture, mapping = ensure_exit_levels(
+                        chosen, capture, mapping, strike_gap, fetch_first_candle,
+                    )
                 manager.open(chosen, mapping)
         else:
             # Still open - detector state must still advance every candle

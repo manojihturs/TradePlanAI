@@ -12,6 +12,41 @@ from strategy.entry_signal import Candle
 from strategy.replay_engine import ReplayEngineError, run_replay, format_summary
 
 
+# Narrowed real data (23850-24300) reproducing the exact real-data gap
+# found this session: an entry at the lowest strike (23850) has no lower
+# rung for its Mapped Stop Loss within this range.
+_NARROW_RAW = {
+    23850: (342.80, 288.00, 86.50, 52.65),
+    23900: (310.00, 253.80, 102.65, 63.65),
+    23950: (269.95, 221.85, 120.85, 78.20),
+    24000: (238.75, 192.00, 141.65, 94.40),
+    24050: (206.35, 165.50, 164.65, 114.00),
+    24100: (176.85, 140.75, 190.00, 135.05),
+    24150: (154.00, 118.85, 218.00, 159.55),
+}
+_EXTRA_STRIKE = {23800: (383.40, 324.00, 72.30, 42.60)}
+
+
+def _make_narrow_capture():
+    levels = {
+        strike: StrikeLevels(strike=strike, ce_high=ce_h, ce_low=ce_l,
+                              pe_high=pe_h, pe_low=pe_l)
+        for strike, (ce_h, ce_l, pe_h, pe_l) in _NARROW_RAW.items()
+    }
+    return LevelCapture(
+        session_date=date(2026, 7, 22), spot_open=24150.0, atm=24150,
+        top_strike=24144.45, bottom_strike=24050.85, levels=levels,
+    )
+
+
+def _narrow_fetcher(strike: int, side: str):
+    table = {**_NARROW_RAW, **_EXTRA_STRIKE}
+    if strike not in table:
+        raise RuntimeError(f"strike {strike} not available (test stub)")
+    ce_h, ce_l, pe_h, pe_l = table[strike]
+    return (0.0, ce_h if side == "CE" else pe_h, ce_l if side == "CE" else pe_l, 0.0)
+
+
 def _make_mapping():
     raw = {
         23700: (459.20, 402.40, 50.20, 28.15),
@@ -135,6 +170,60 @@ class RunReplayTests(unittest.TestCase):
         self.assertIsNotNone(result.open_position_at_end)
         self.assertEqual(result.open_position_at_end.entry.timestamp,
                           datetime(2026, 7, 22, 9, 30))
+
+
+class RunReplayWithLadderExpansionTests(unittest.TestCase):
+    """A CE entry at the LOWEST captured strike (23850) whose Mapped Stop
+    Loss requires a strike (23800) beyond the initial capture - Module 8
+    must extend on demand rather than the trade being skipped, reproducing
+    the exact real-data gap found this session."""
+
+    def setUp(self) -> None:
+        self.capture = _make_narrow_capture()
+        self.mapping = build_premium_mapping(self.capture, strike_gap=50)
+
+    def test_expands_ladder_and_completes_trade(self) -> None:
+        strike = 23850
+        ce_series = {strike: {
+            datetime(2026, 7, 22, 9, 20): _c(40.0, 45.0, 35.0, 40.0),   # safe: high < 52.65
+            datetime(2026, 7, 22, 9, 25): _c(55.0, 60.0, 50.0, 55.0),   # crosses 52.65 - entry
+            datetime(2026, 7, 22, 9, 30): _c(58.0, 65.0, 55.0, 58.0),   # reaches target 63.65
+        }}
+        pe_series = {strike: {
+            datetime(2026, 7, 22, 9, 20): _c(200.0, 210.0, 195.0, 200.0),
+            datetime(2026, 7, 22, 9, 25): _c(200.0, 210.0, 195.0, 200.0),
+            datetime(2026, 7, 22, 9, 30): _c(200.0, 210.0, 195.0, 200.0),
+        }}
+
+        result = run_replay(
+            self.mapping, ce_series, pe_series,
+            capture=self.capture, strike_gap=50, fetch_first_candle=_narrow_fetcher,
+        )
+
+        self.assertEqual(len(result.trades), 1)
+        trade = result.trades[0]
+        self.assertEqual(trade.entry, 52.65)
+        self.assertEqual(trade.exit, 63.65)
+        self.assertEqual(trade.reason, "TARGET")
+        # The Mapped Stop Loss (42.60, from the expanded strike 23800) was
+        # computed successfully even though 23800 was never in the
+        # original capture - proof the expansion actually happened.
+        self.assertEqual(trade.stop_loss, 42.60)
+
+    def test_without_expansion_params_raises_as_before(self) -> None:
+        # Backward compatibility: omitting capture/strike_gap/fetch_first_candle
+        # preserves the exact pre-Module-8 behavior (propagates the error).
+        strike = 23850
+        ce_series = {strike: {
+            datetime(2026, 7, 22, 9, 20): _c(40.0, 45.0, 35.0, 40.0),
+            datetime(2026, 7, 22, 9, 25): _c(55.0, 60.0, 50.0, 55.0),
+        }}
+        pe_series = {strike: {
+            datetime(2026, 7, 22, 9, 20): _c(200.0, 210.0, 195.0, 200.0),
+            datetime(2026, 7, 22, 9, 25): _c(200.0, 210.0, 195.0, 200.0),
+        }}
+        with self.assertRaises(Exception):
+            run_replay(self.mapping, ce_series, pe_series)
 
 
 class FormatSummaryTests(unittest.TestCase):

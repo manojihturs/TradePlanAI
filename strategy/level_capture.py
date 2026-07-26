@@ -293,3 +293,65 @@ def capture_levels(
         bottom_strike=bottom_strike,
         levels=captured,
     )
+
+
+# ---------------------------------------------------------------------------
+# Additive extension (2026-07-27) - per instruction, the +/- num_strikes
+# range from capture_levels() is only the INITIAL data collection window,
+# not a hard trading boundary. This does not change capture_levels() or
+# any existing behavior - it only adds the ability to grow an existing,
+# already-frozen LevelCapture with one more strike's data on demand
+# (e.g. when an entry occurs at the current edge and a Mapped Stop Loss
+# or Target needs one more adjacent rung - see strategy/ladder_expansion.py,
+# Module 8). LevelCapture itself remains immutable: this returns a NEW
+# LevelCapture, leaving the original untouched.
+def extend_capture(
+    capture: LevelCapture, new_strike: int, fetch_first_candle: FirstCandleFetcher,
+) -> LevelCapture:
+    """Return a new LevelCapture with one additional strike's levels added.
+
+    Args:
+        capture: The existing, already-frozen ``LevelCapture`` to extend.
+        new_strike: The additional strike to capture. If already present
+            in ``capture``, this is a no-op (the original is returned).
+        fetch_first_candle: Same callback shape as ``capture_levels`` -
+            ``fetch_first_candle(strike, side) -> (open, high, low, close)``.
+
+    Returns:
+        A new ``LevelCapture`` identical to ``capture`` except with
+        ``new_strike`` added to ``levels``. Top/Bottom/ATM/spot_open are
+        unchanged - they depend only on the original ATM strike's own
+        candle, already captured.
+
+    Raises:
+        LevelCaptureError: if ``new_strike``'s candle data could not be
+            fetched, or fails internal consistency checks.
+    """
+    if new_strike in capture.levels:
+        logger.debug("extend_capture: strike %d already captured, no-op", new_strike)
+        return capture
+
+    try:
+        _, ce_high, ce_low, _ = fetch_first_candle(new_strike, "CE")
+        _, pe_high, pe_low, _ = fetch_first_candle(new_strike, "PE")
+    except Exception as exc:
+        raise LevelCaptureError(
+            f"failed to fetch first-5-minute candle for strike {new_strike} "
+            f"on {capture.session_date} (ladder expansion): {exc}"
+        ) from exc
+
+    new_levels = dict(capture.levels)
+    new_levels[new_strike] = StrikeLevels(
+        strike=new_strike, ce_high=ce_high, ce_low=ce_low, pe_high=pe_high, pe_low=pe_low,
+    )
+    logger.info("Ladder expansion: strike %d added to capture for %s",
+                new_strike, capture.session_date)
+
+    return LevelCapture(
+        session_date=capture.session_date,
+        spot_open=capture.spot_open,
+        atm=capture.atm,
+        top_strike=capture.top_strike,
+        bottom_strike=capture.bottom_strike,
+        levels=new_levels,
+    )

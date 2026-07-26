@@ -196,3 +196,60 @@ def build_premium_mapping(capture: LevelCapture, strike_gap: int) -> PremiumMapp
         bottom_ce_ladder=bottom_ce_ladder,
         bottom_pe_ladder=bottom_pe_ladder,
     )
+
+
+# ---------------------------------------------------------------------------
+# Additive extension (2026-07-27) - mirrors level_capture.extend_capture().
+# Does not change build_premium_mapping() or any existing behavior - only
+# adds the ability to grow an existing, already-frozen PremiumMapping with
+# one more strike's levels, once an extended LevelCapture has that strike
+# (see strategy/ladder_expansion.py, Module 8). PremiumMapping remains
+# immutable: this returns a NEW PremiumMapping, leaving the original
+# untouched.
+def extend_mapping(mapping: PremiumMapping, capture: LevelCapture, new_strike: int) -> PremiumMapping:
+    """Return a new PremiumMapping with one additional strike added to
+    all four ladders.
+
+    Args:
+        mapping: The existing, already-frozen ``PremiumMapping`` to extend.
+        capture: A ``LevelCapture`` that already contains ``new_strike``
+            (typically the result of ``level_capture.extend_capture``).
+        new_strike: The additional strike to add to every ladder.
+
+    Returns:
+        A new ``PremiumMapping`` identical to ``mapping`` except with
+        ``new_strike`` present in all four ladders. top_strike_rounded
+        and bottom_strike_rounded are unchanged.
+
+    Raises:
+        PremiumMappingError: if ``new_strike`` is not present in ``capture``.
+    """
+    if new_strike in mapping.top_ce_ladder:
+        logger.debug("extend_mapping: strike %d already present, no-op", new_strike)
+        return mapping
+
+    try:
+        levels = capture.get_levels(new_strike)
+    except LevelCaptureError as exc:
+        raise PremiumMappingError(
+            f"cannot extend mapping to strike {new_strike}: not present in "
+            f"the supplied capture: {exc}"
+        ) from exc
+
+    new_top_ce = dict(mapping.top_ce_ladder); new_top_ce[new_strike] = levels.pe_low
+    new_top_pe = dict(mapping.top_pe_ladder); new_top_pe[new_strike] = levels.ce_high
+    new_bottom_ce = dict(mapping.bottom_ce_ladder); new_bottom_ce[new_strike] = levels.pe_high
+    new_bottom_pe = dict(mapping.bottom_pe_ladder); new_bottom_pe[new_strike] = levels.ce_low
+
+    logger.info("Ladder expansion: strike %d added to premium mapping for %s",
+                new_strike, mapping.session_date)
+
+    return PremiumMapping(
+        session_date=mapping.session_date,
+        top_strike_rounded=mapping.top_strike_rounded,
+        bottom_strike_rounded=mapping.bottom_strike_rounded,
+        top_ce_ladder=new_top_ce,
+        top_pe_ladder=new_top_pe,
+        bottom_ce_ladder=new_bottom_ce,
+        bottom_pe_ladder=new_bottom_pe,
+    )
