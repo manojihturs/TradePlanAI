@@ -28,6 +28,7 @@ from strategy.entry_signal import Candle, EntrySignal, EntrySignalDetector, Trad
 from strategy.exit_signal import ExitLevels
 from strategy.ladder_expansion import ensure_exit_levels
 from strategy.level_capture import FirstCandleFetcher, LevelCapture
+from strategy.level_state_manager import LevelStateManager, level_key_from_entry
 from strategy.paper_trading import PaperTradingEngine, Trade
 from strategy.position_manager import Position, PositionManager
 from strategy.premium_mapping import PremiumMapping
@@ -165,6 +166,8 @@ def run_replay(
     detector = EntrySignalDetector(mapping)
     manager = PositionManager()
     ledger = PaperTradingEngine()
+    level_states = LevelStateManager()
+    level_states.initialize_day(mapping)
 
     # Captured just before a position closes, since ClosedTrade (Module 5)
     # does not itself carry ExitLevels - see paper_trading.py's note.
@@ -190,12 +193,21 @@ def run_replay(
                 if closed is not None:
                     ledger.record_trade(closed, pending_exit_levels)
                     pending_exit_levels = None
+                    # Module 9, rule 3: the level that produced this trade
+                    # becomes USED the moment it completes (Target or Stop
+                    # Loss - either exit reason, per specification).
+                    level_states.mark_used(level_key_from_entry(closed.entry))
 
         # 2. Only look for a NEW entry if flat (either already flat, or
         #    just became flat from step 1 on this same candle).
         if manager.is_flat:
             signals = detector.process_candle(ts, ce_candles, pe_candles)
-            chosen = _select_signal(signals)
+            # Module 9, rules 2 and 4: only an ACTIVE level may open a
+            # trade; a USED level is filtered out here, before selection,
+            # not merely deprioritized - it does not compete with an
+            # ACTIVE level for _select_signal's tie-break.
+            active_signals = [s for s in signals if level_states.can_open(level_key_from_entry(s))]
+            chosen = _select_signal(active_signals)
             if chosen is not None:
                 expansion_enabled = (capture is not None and strike_gap is not None
                                       and fetch_first_candle is not None)

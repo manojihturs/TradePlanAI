@@ -226,6 +226,48 @@ class RunReplayWithLadderExpansionTests(unittest.TestCase):
             run_replay(self.mapping, ce_series, pe_series)
 
 
+class LevelReuseIsBlockedTests(unittest.TestCase):
+    """Reproduces the exact real-data bug found this session (2026-07-22
+    trades 3 and 4 both entering at level 206.35, ce_high@24050, TOP/PE) -
+    with Module 9 wired in, the second attempt must now be blocked."""
+
+    _CE_SAFE = _c(90.0, 95.0, 85.0, 90.0)   # stays below both CE thresholds at 24050
+
+    def setUp(self) -> None:
+        self.mapping = _make_mapping()
+
+    def test_second_entry_from_used_level_is_blocked(self) -> None:
+        strike = 24050
+        ce_series = {strike: {
+            datetime(2026, 7, 22, 9, 20): self._CE_SAFE,
+            datetime(2026, 7, 22, 9, 25): self._CE_SAFE,
+            datetime(2026, 7, 22, 9, 30): self._CE_SAFE,
+            datetime(2026, 7, 22, 9, 35): self._CE_SAFE,
+        }}
+        pe_series = {strike: {
+            datetime(2026, 7, 22, 9, 20): _c(150.0, 155.0, 145.0, 150.0),   # safe baseline
+            # Entry 1: PE crosses above 206.35 (ce_high@24050).
+            datetime(2026, 7, 22, 9, 25): _c(200.0, 220.0, 200.0, 210.0),
+            # Exit 1: PE falls to/through the Mapped Stop Loss (176.85).
+            datetime(2026, 7, 22, 9, 30): _c(200.0, 205.0, 170.0, 175.0),
+            # PE crosses back ABOVE 206.35 again - same level, same day.
+            # Without Module 9 this would be a second, legitimate-looking
+            # fresh cross; with it, the level is USED and must be skipped.
+            datetime(2026, 7, 22, 9, 35): _c(180.0, 215.0, 178.0, 210.0),
+        }}
+
+        result = run_replay(self.mapping, ce_series, pe_series)
+
+        self.assertEqual(len(result.trades), 1)   # only the first trade, not a second
+        first = result.trades[0]
+        self.assertEqual(first.entry, 206.35)
+        self.assertEqual(first.exit, 176.85)
+        self.assertEqual(first.reason, "STOP_LOSS")
+        # No position re-opened at 09:35 despite the level being crossed
+        # again - flat for the rest of the (short) replay.
+        self.assertIsNone(result.open_position_at_end)
+
+
 class FormatSummaryTests(unittest.TestCase):
     def test_no_trades_summary_does_not_error(self) -> None:
         strike = 24050
