@@ -281,35 +281,43 @@ def simulate_cross_ladder_day(session_date, atm, levels, ce_candles_by_ts, pe_ca
     return trades
 
 # ---------------------------------------------------------------------------
-# Single-strike cross confirmation (2026-07-27 - OFF by default, standalone).
-# Per instruction: trade ONLY the SP High strike's own CE/PE (no ladder walk
-# to other strikes) - the plain cross-plot pair at strike K, same field
-# pairing as simulate_cross_ladder_day() but pinned to ONE K instead of
-# scanning the whole captured range:
-#   PE_WINS: pe crosses ABOVE ce_high(K)  AND  ce crosses BELOW pe_low(K)
-#   CE_WINS: ce crosses ABOVE pe_low(K)   AND  pe crosses BELOW ce_high(K)
+# Single-strike OWN-SIDE confirmation (2026-07-27 - OFF by default,
+# standalone). CORRECTED from an earlier cross-plotted version: verified
+# against a real trade on 2026-07-23 that the cross-plotted pairing missed
+# (it fired at 10:05, but the real entry was 09:55). At 09:55 CE crossed its
+# OWN first-5min high (133.00) while PE was already below its OWN first-5min
+# low (150.30) - this is literally the SAME confirmation the original ATM
+# system uses, just applied at strike K (here, SP High) instead of ATM:
+#   CE_WINS: ce crosses ABOVE ce_high(K) (OWN)  AND  pe below pe_low(K) (OWN)
+#   PE_WINS: pe crosses ABOVE pe_high(K) (OWN)  AND  ce below ce_low(K) (OWN)
+# Confirmed explicitly - NOT the cross-plotted pairing (pe vs ce_high, ce vs
+# pe_low) used by simulate_cross_ladder_day() for the multi-strike case.
 # No further-strike SL/target ladder exists at a single K, so this uses the
 # same fixed-points SL (SL_POINTS) and profit-lock trail (MIN_PROFIT_POINTS)
 # the original ATM-only system uses, plus a mean-reversion exit (price
-# closes back on the wrong side of the level it crossed) - not yet
-# confirmed against real trade data the way the multi-strike engine was, so
-# treat these SL/target numbers as provisional pending your review.
+# closes back on the wrong side of the level it crossed).
 def simulate_single_strike_day(session_date, k, levels, ce_candles_by_ts, pe_candles_by_ts):
     ce_rec, pe_rec = levels.get((k, "CE")), levels.get((k, "PE"))
     if not ce_rec or not pe_rec:
         return []
-    ce_high_k, pe_low_k = ce_rec["high"], pe_rec["low"]
+    ce_high_k, ce_low_k = ce_rec["high"], ce_rec["low"]
+    pe_high_k, pe_low_k = pe_rec["high"], pe_rec["low"]
+    # Fresh-cross state must be tracked from the day's FIRST candle, not
+    # from 09:25 - otherwise 09:25 always looks "fresh" even when the cross
+    # actually happened earlier (09:15/09:20) and is already stale by 09:25.
+    # Entries are still only ALLOWED from 09:25 onward (per instruction -
+    # ignore 9:15/9:20 as tradeable candles), but the crossing HISTORY has
+    # to start earlier to correctly tell "fresh" from "already happened".
     all_ts = sorted(set(ce_candles_by_ts) & set(pe_candles_by_ts))
-    all_ts = [ts for ts in all_ts if ts.time() >= time(9, 25)]
 
-    prev_pe_raw = prev_ce_raw = False
+    prev_ce_raw = prev_pe_raw = False
     position, trades = None, []
     for ts in all_ts:
         c, p = ce_candles_by_ts[ts], pe_candles_by_ts[ts]
-        pe_raw = ce_high_k < p.high and pe_low_k > c.low
-        ce_raw = pe_low_k < c.high and ce_high_k > p.low
-        pe_fresh = pe_raw and not prev_pe_raw
-        ce_fresh = ce_raw and not prev_ce_raw
+        ce_raw = c.high > ce_high_k and p.low < pe_low_k
+        pe_raw = p.high > pe_high_k and c.low < ce_low_k
+        ce_fresh = ce_raw and not prev_ce_raw and ts.time() >= time(9, 25)
+        pe_fresh = pe_raw and not prev_pe_raw and ts.time() >= time(9, 25)
 
         if position:
             px = c.close if position["side"] == "CE" else p.close
@@ -317,8 +325,8 @@ def simulate_single_strike_day(session_date, k, levels, ce_candles_by_ts, pe_can
             if px - position["entry"] >= MIN_PROFIT_POINTS:
                 position["trail"] = max(position["trail"], position["entry"] + MIN_PROFIT_POINTS)
             profit_locked = position["trail"] >= position["entry"] + MIN_PROFIT_POINTS - 1e-9
-            reverted = ((position["side"] == "PE" and c.close >= pe_low_k)
-                        or (position["side"] == "CE" and p.close >= ce_high_k))
+            reverted = ((position["side"] == "CE" and c.close <= ce_high_k)
+                        or (position["side"] == "PE" and p.close <= pe_high_k))
             if reverted and not profit_locked:
                 exit_price, exit_reason = px, "spot back across the level"
             elif px <= position["trail"]:
@@ -331,13 +339,13 @@ def simulate_single_strike_day(session_date, k, levels, ce_candles_by_ts, pe_can
                 position = None
 
         if not position:
-            if pe_fresh:
-                position = {"entry_ts": ts, "side": "PE", "strike": k, "entry": ce_high_k,
-                            "trail": max(0.0, ce_high_k - SL_POINTS)}
-            elif ce_fresh:
-                position = {"entry_ts": ts, "side": "CE", "strike": k, "entry": pe_low_k,
-                            "trail": max(0.0, pe_low_k - SL_POINTS)}
-        prev_pe_raw, prev_ce_raw = pe_raw, ce_raw
+            if ce_fresh:
+                position = {"entry_ts": ts, "side": "CE", "strike": k, "entry": c.close,
+                            "trail": max(0.0, c.close - SL_POINTS)}
+            elif pe_fresh:
+                position = {"entry_ts": ts, "side": "PE", "strike": k, "entry": p.close,
+                            "trail": max(0.0, p.close - SL_POINTS)}
+        prev_ce_raw, prev_pe_raw = ce_raw, pe_raw
     return trades
 
 def build_watch_pairs(levels, atm, winning_side):
