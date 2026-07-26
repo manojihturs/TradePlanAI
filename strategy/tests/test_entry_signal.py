@@ -117,6 +117,32 @@ class EntrySignalDetectorTests(unittest.TestCase):
         self.mapping = _make_mapping()
         self.detector = EntrySignalDetector(self.mapping)
 
+    def test_0915_never_produces_a_signal_even_if_condition_holds(self) -> None:
+        # The 09:15 candle IS the same candle Module 1 used to capture
+        # strike 24000's own CE-High/PE-Low - so the raw condition is
+        # structurally guaranteed true here regardless of real movement.
+        # This test confirms it is still suppressed even though the raw
+        # inequality genuinely holds (using the strike's own captured
+        # first-candle values as the "crossing" candle).
+        ce_candles = {24000: Candle(90.0, 238.75, 90.0, 200.0)}   # its own captured high
+        pe_candles = {24000: Candle(200.0, 200.0, 94.40, 150.0)}  # its own captured low
+        signals = self.detector.process_candle(datetime(2026, 7, 22, 9, 15), ce_candles, pe_candles)
+        self.assertEqual(signals, [])
+
+    def test_0920_can_still_fire_after_0915_suppressed(self) -> None:
+        # Confirms suppression at 09:15 does not corrupt fresh-cross state
+        # for later candles - a genuine fresh cross at 09:20 must still work.
+        ce_candles_0915 = {24000: Candle(90.0, 90.0, 85.0, 88.0)}   # below threshold - no cross
+        pe_candles_0915 = {24000: Candle(250.0, 250.0, 245.0, 248.0)}  # above threshold - no cross
+        first = self.detector.process_candle(datetime(2026, 7, 22, 9, 15), ce_candles_0915, pe_candles_0915)
+        self.assertEqual(first, [])
+
+        ce_candles_0920 = {24000: Candle(90.0, 96.0, 90.0, 94.55)}     # now crosses fresh
+        pe_candles_0920 = {24000: Candle(220.0, 220.0, 200.0, 210.0)}
+        second = self.detector.process_candle(datetime(2026, 7, 22, 9, 20), ce_candles_0920, pe_candles_0920)
+        self.assertEqual(len(second), 1)
+        self.assertEqual(second[0].side, TradeSide.CE)
+
     def test_row1_pe_entry_at_strike_24050_top_anchor(self) -> None:
         # PE_WINS: pe.high > ce_high(24050)=206.35 AND ce.low < pe_low(24050)=114.00
         # CE's candle must stay entirely BELOW 114.00 (not straddle it) -

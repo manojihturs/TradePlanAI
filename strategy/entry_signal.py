@@ -34,11 +34,21 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time
 from enum import Enum
 from typing import Dict, List, Tuple
 
 from strategy.premium_mapping import PremiumMapping
+
+#: 09:15 is excluded from producing entries, per instruction (2026-07-27):
+#: it is the SAME candle Module 1 uses to capture a strike's own CE-High/
+#: PE-Low/CE-Low/PE-High in the first place, so comparing it against
+#: thresholds derived from itself is structurally guaranteed to satisfy
+#: the raw condition every session, regardless of real market movement -
+#: not a genuine signal. Raw state is still tracked at 09:15 (see
+#: process_candle) so fresh-cross detection for LATER candles remains
+#: correct; only the emission of a signal AT 09:15 itself is suppressed.
+EXCLUDED_ENTRY_TIME = time(9, 15)
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +199,8 @@ class EntrySignalDetector:
             combination that produced a FRESH confirmed entry this
             candle. Empty if nothing confirmed - "otherwise NO TRADE"
             per specification, so an empty list is the normal case,
-            not an error.
+            not an error. Always empty if ``timestamp`` is 09:15 (see
+            ``EXCLUDED_ENTRY_TIME``), even if the raw condition holds.
         """
         signals: List[EntrySignal] = []
 
@@ -214,7 +225,8 @@ class EntrySignalDetector:
                 for side in (TradeSide.CE, TradeSide.PE):
                     key = (strike, anchor, side)
                     raw = _raw_condition(ce_candle, pe_candle, ce_level, pe_level, side)
-                    fresh = raw and not self._prev_raw.get(key, False)
+                    fresh = (raw and not self._prev_raw.get(key, False)
+                             and timestamp.time() != EXCLUDED_ENTRY_TIME)
                     if fresh:
                         signal = EntrySignal(
                             timestamp=timestamp, strike=strike, side=side, anchor=anchor,
