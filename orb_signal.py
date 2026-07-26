@@ -280,6 +280,66 @@ def simulate_cross_ladder_day(session_date, atm, levels, ce_candles_by_ts, pe_ca
         prev_raw = raw
     return trades
 
+# ---------------------------------------------------------------------------
+# Single-strike cross confirmation (2026-07-27 - OFF by default, standalone).
+# Per instruction: trade ONLY the SP High strike's own CE/PE (no ladder walk
+# to other strikes) - the plain cross-plot pair at strike K, same field
+# pairing as simulate_cross_ladder_day() but pinned to ONE K instead of
+# scanning the whole captured range:
+#   PE_WINS: pe crosses ABOVE ce_high(K)  AND  ce crosses BELOW pe_low(K)
+#   CE_WINS: ce crosses ABOVE pe_low(K)   AND  pe crosses BELOW ce_high(K)
+# No further-strike SL/target ladder exists at a single K, so this uses the
+# same fixed-points SL (SL_POINTS) and profit-lock trail (MIN_PROFIT_POINTS)
+# the original ATM-only system uses, plus a mean-reversion exit (price
+# closes back on the wrong side of the level it crossed) - not yet
+# confirmed against real trade data the way the multi-strike engine was, so
+# treat these SL/target numbers as provisional pending your review.
+def simulate_single_strike_day(session_date, k, levels, ce_candles_by_ts, pe_candles_by_ts):
+    ce_rec, pe_rec = levels.get((k, "CE")), levels.get((k, "PE"))
+    if not ce_rec or not pe_rec:
+        return []
+    ce_high_k, pe_low_k = ce_rec["high"], pe_rec["low"]
+    all_ts = sorted(set(ce_candles_by_ts) & set(pe_candles_by_ts))
+    all_ts = [ts for ts in all_ts if ts.time() >= time(9, 25)]
+
+    prev_pe_raw = prev_ce_raw = False
+    position, trades = None, []
+    for ts in all_ts:
+        c, p = ce_candles_by_ts[ts], pe_candles_by_ts[ts]
+        pe_raw = ce_high_k < p.high and pe_low_k > c.low
+        ce_raw = pe_low_k < c.high and ce_high_k > p.low
+        pe_fresh = pe_raw and not prev_pe_raw
+        ce_fresh = ce_raw and not prev_ce_raw
+
+        if position:
+            px = c.close if position["side"] == "CE" else p.close
+            exit_price = exit_reason = None
+            if px - position["entry"] >= MIN_PROFIT_POINTS:
+                position["trail"] = max(position["trail"], position["entry"] + MIN_PROFIT_POINTS)
+            profit_locked = position["trail"] >= position["entry"] + MIN_PROFIT_POINTS - 1e-9
+            reverted = ((position["side"] == "PE" and c.close >= pe_low_k)
+                        or (position["side"] == "CE" and p.close >= ce_high_k))
+            if reverted and not profit_locked:
+                exit_price, exit_reason = px, "spot back across the level"
+            elif px <= position["trail"]:
+                exit_price, exit_reason = px, "trail hit" if profit_locked else "SL hit"
+            if exit_price is not None:
+                pnl_pts = exit_price - position["entry"]
+                trades.append({**position, "exit_ts": ts, "exit_price": exit_price,
+                               "exit_reason": exit_reason, "pnl_points": pnl_pts,
+                               "pnl_rupees": pnl_pts * QTY - COST_PER_TRADE_RUPEES})
+                position = None
+
+        if not position:
+            if pe_fresh:
+                position = {"entry_ts": ts, "side": "PE", "strike": k, "entry": ce_high_k,
+                            "trail": max(0.0, ce_high_k - SL_POINTS)}
+            elif ce_fresh:
+                position = {"entry_ts": ts, "side": "CE", "strike": k, "entry": pe_low_k,
+                            "trail": max(0.0, pe_low_k - SL_POINTS)}
+        prev_pe_raw, prev_ce_raw = pe_raw, ce_raw
+    return trades
+
 def build_watch_pairs(levels, atm, winning_side):
     """Early-exit rule: for each strike in the ladder (ITM1..ITM6 or OTM1..OTM6),
     pair its OWN (strike, instrument_key) with the NEXT strike's level. If that
