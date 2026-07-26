@@ -146,93 +146,139 @@ def ladder_lines(levels, atm, winning_side):
     return [d["level"] for d in ladder_strikes_ordered(levels, atm, winning_side)]
 
 # ---------------------------------------------------------------------------
-# Ladder-cross entry confirmation (2026-07-26, under review - OFF by
-# default). Trader's rule, confirmed against a real example (ATM 23800,
-# entry at strike 23700): "CE crosses UP through a further strike's PE-low
-# WHILE PE crosses DOWN through that same strike's CE-high -> that's a real
-# CE trade" (and the mirror for PE). In general terms (W = the side about to
-# be bought, L = the other side), at some strike K:
-#     W_close > L_high@K   AND   L_close < W_low@K
-# This is DIFFERENT from the existing ATM-only triple confirmation (which
-# compares each side to its OWN 9:15 high/low at ATM only) - this checks
-# whether the move is strong enough to ALSO break a cross-plotted reference
-# at a strike beyond ATM. Confirmed to run as an ADDITIONAL filter stacked
-# on top of the existing triple confirmation, not a replacement - same
-# convention as REQUIRE_OI_TREND_CONFIRMATION / REQUIRE_VWAP_CONFIRMATION.
+# Cross-Ladder Trade Engine (2026-07-26/27 - OFF by default, standalone).
 #
-# Scan direction: strikes are walked in the DIRECTION OF THE MOVE from ATM
-# (CE_WINS -> above ATM, PE_WINS -> below ATM) - matching the confirmed
-# example (23700 is below ATM 23800, and that trade was PE_WINS/bearish),
-# NOT each side's own classical ITM direction (which is the opposite way
-# for PE - see itm_strikes(), used separately by ITM_ONLY_LADDER).
-REQUIRE_LADDER_CROSS_ENTRY = False
-
-def cross_entry_strikes(atm, winning_side, n=SIGNAL_STRIKES):
-    """Strikes walked in the direction the move is going: CE_WINS -> above
-    ATM, PE_WINS -> below ATM. Deliberately the OPPOSITE convention from
-    itm_strikes() (classical per-instrument ITM direction) - the two serve
-    different rules and should not be confused with each other."""
-    step = STRIKE_GAP if winning_side == "CE" else -STRIKE_GAP
-    return [atm + i * step for i in range(1, n + 1)]
-
-def ladder_cross_confirms(levels, atm, winning_side, ce_close, pe_close):
-    """True if SOME strike K in cross_entry_strikes() satisfies
-    W_close > L_high@K AND L_close < W_low@K (see module note above).
-    Fails CLOSED (no confirmation) if a strike wasn't captured that day -
-    missing data is not a free pass, same policy as every other filter
-    here. Checked nearest-to-ATM first, but any match is sufficient."""
-    losing_side = "PE" if winning_side == "CE" else "CE"
-    w_close = ce_close if winning_side == "CE" else pe_close
-    l_close = pe_close if winning_side == "CE" else ce_close
-    for k in cross_entry_strikes(atm, winning_side):
-        l_rec = levels.get((k, losing_side))
-        w_rec = levels.get((k, winning_side))
-        if not l_rec or not w_rec:
-            continue
-        if w_close > l_rec["high"] and l_close < w_rec["low"]:
-            return True
-    return False
-
-# ---------------------------------------------------------------------------
-# Own-side ladder entry confirmation (2026-07-26, under review - OFF by
-# default). Simpler variant of the cross-strike rule above: instead of
-# comparing each side to the OPPOSITE side's level at a further strike (the
-# W_close > L_high@K rule), this compares each side to its OWN level at that
-# strike - literally the same comparison the ATM-only triple confirmation
-# already makes (ce_close > ce_high, pe_close < pe_low), just re-checked at
-# strikes beyond ATM as price moves further, using the marked ladder lines
-# directly: CE_WINS needs ce_close > ce_high@K AND pe_close < pe_low@K, PE_
-# WINS the mirror.
+# SUPERSEDES two earlier attempts (ladder_cross_confirms / REQUIRE_LADDER_
+# CROSS_ENTRY and ladder_same_side_confirms / REQUIRE_OWN_SIDE_LADDER_ENTRY,
+# both removed) that got the field pairing and/or scan direction wrong and
+# were never validated against real trade data. This version was derived
+# strike-by-strike from the trader's own logged trades on 2026-07-22 (4
+# rows: entry, target, SL, exit) and reproduces entry/SL/target EXACTLY for
+# rows 1-3 of that log (row 4 not independently checked - same K as row 2).
 #
-# Direction matters here and is DIFFERENT from cross_entry_strikes(): CE's
-# own high SHRINKS as strike moves further OTM (above ATM), so scanning that
-# direction makes the check trivially easy to satisfy at almost any price -
-# confirmed by a real bug found backtesting 07-22 (8 false CE entries fired
-# on a day that was clearly bearish, because ce_close only had to clear a
-# tiny far-OTM strike's high). The meaningful direction is each side's own
-# ITM side instead (itm_strikes()) - CE's high only gets HARDER to clear
-# moving toward ITM (below ATM), which is a genuine strength test, mirrored
-# for PE (above ATM).
-REQUIRE_OWN_SIDE_LADDER_ENTRY = False
+# THE RULE (confirmed against real numbers, not guessed):
+#   At any strike K, define:
+#     ce_high(K) = that strike's CE first-5min high
+#     pe_low(K)  = that strike's PE first-5min low
+#   PE_WINS at K when: pe crosses ABOVE ce_high(K)  AND  ce crosses BELOW pe_low(K)
+#     -> entry price = ce_high(K)
+#   CE_WINS at K when: ce crosses ABOVE pe_low(K)   AND  pe crosses BELOW ce_high(K)
+#     -> entry price = pe_low(K)
+#   Both directions test the exact same field pair (ce_high, pe_low) at K -
+#   only the inequality assignment differs. This is NOT symmetric to simply
+#   swapping "opposite side" - an earlier version wrongly used ce_low/pe_high
+#   for the CE mirror and produced 8 false entries on a bearish day.
+#
+#   SL/target are the ADJACENT strikes' SAME field, ordered by VALUE (not by
+#   strike position - ce_high DECREASES toward ATM while pe_low INCREASES
+#   toward ATM, so strike-position ordering silently swapped SL/target for
+#   one side; found via the trader's row 3 not matching until fixed):
+#     target = next-higher value in the field's ladder
+#     SL     = next-lower value in the field's ladder
+#
+#   Confirmation basis: candle HIGH/LOW (intrabar touch), not close - the
+#   trader was explicit that live entries react to the exact price touching
+#   a level, not waiting for a candle to close on it. This is the closest
+#   available proxy from historical 1-min-resampled data; true tick data
+#   isn't available for backtesting.
+#
+#   A given (side, K) signal is FRESH-CROSS ONLY: it must transition from
+#   not-satisfied to satisfied between consecutive candles, not just still
+#   happen to be satisfied. Confirmed against a real ambiguity at 2026-07-22
+#   10:50 where the PE and CE conditions were BOTH raw-true simultaneously
+#   for the same K - only the freshly-crossing one is real.
+#
+#   Re-entry after a target hit is ALWAYS automatic at the next rung out -
+#   confirmed explicitly, not a judgment call.
+#
+# Deliberately does NOT include the pivot-stuck early exit yet (see
+# PIVOT_STUCK_EXIT above) - that mechanism is real (confirmed by the
+# trader) but its exact threshold isn't tuned; only target/SL exits are
+# wired into simulate_cross_ladder_day() for now, pending more validation
+# days before combining the two.
+LADDER_CROSS_TRADE_MODE = False
 
-def ladder_same_side_confirms(levels, atm, winning_side, ce_close, pe_close):
-    """True if SOME strike K in itm_strikes(atm, winning_side) satisfies
-    ce_close > ce_high@K AND pe_close < pe_low@K (CE_WINS) or the mirror
-    (PE_WINS) - both sides compared to their OWN field at strike K, not the
-    cross-plotted fields ladder_cross_confirms() uses. Fails CLOSED if a
-    strike wasn't captured that day."""
-    for k in itm_strikes(atm, winning_side):
-        ce_rec = levels.get((k, "CE"))
-        pe_rec = levels.get((k, "PE"))
-        if not ce_rec or not pe_rec:
+def cross_ladder_fields(levels):
+    """{strike: ce_high} and {strike: pe_low} across every captured strike -
+    the two fields the whole engine is built on."""
+    strikes = sorted({k for (k, side) in levels.keys()})
+    ce_high = {k: levels[(k, "CE")]["high"] for k in strikes if (k, "CE") in levels}
+    pe_low = {k: levels[(k, "PE")]["low"] for k in strikes if (k, "PE") in levels}
+    return ce_high, pe_low
+
+def cross_ladder_raw_signals(ce_high, pe_low, ce_c, pe_c):
+    """{(side, K)} for every strike whose raw inequality is satisfied by
+    this candle's high/low (intrabar-touch basis, see module note)."""
+    out = set()
+    for k in ce_high:
+        if k not in pe_low:
             continue
-        if winning_side == "CE":
-            if ce_close > ce_rec["high"] and pe_close < pe_rec["low"]:
-                return True
-        else:
-            if pe_close > pe_rec["high"] and ce_close < ce_rec["low"]:
-                return True
-    return False
+        if ce_high[k] < pe_c.high and pe_low[k] > ce_c.low:
+            out.add(("PE", k))
+        if pe_low[k] < ce_c.high and ce_high[k] > pe_c.low:
+            out.add(("CE", k))
+    return out
+
+def cross_ladder_sl_target(ce_high, pe_low, side, k):
+    """target = next-higher value in the crossed field's ladder, SL = next-
+    lower - ordered by VALUE, not strike position (see module note - the
+    two fields move in opposite directions relative to ATM)."""
+    field = ce_high if side == "PE" else pe_low
+    values = sorted(field.items(), key=lambda kv: kv[1])
+    idx = next((i for i, (kk, v) in enumerate(values) if kk == k), None)
+    if idx is None:
+        return None, None
+    sl = values[idx - 1][1] if idx > 0 else None
+    tgt = values[idx + 1][1] if idx + 1 < len(values) else None
+    return sl, tgt
+
+def simulate_cross_ladder_day(session_date, atm, levels, ce_candles_by_ts, pe_candles_by_ts):
+    """Standalone engine (see module note above) - deliberately NOT wired
+    through on_candle_close/DayState, since its entry price (the crossed
+    level, not a candle close), fresh-cross edge-triggering, and per-trade
+    SL/target model don't match the ATM-triple-confirmation state machine's
+    assumptions. ce_candles_by_ts/pe_candles_by_ts: {ts: Candle} (needs
+    high/low, not just close). Returns a list of trade dicts."""
+    ce_high, pe_low = cross_ladder_fields(levels)
+    all_ts = sorted(set(ce_candles_by_ts) & set(pe_candles_by_ts))
+    all_ts = [ts for ts in all_ts if ts.time() >= time(9, 25)]   # trader: ignore 9:15/9:20
+
+    prev_raw, position, trades = set(), None, []
+    for ts in all_ts:
+        c, p = ce_candles_by_ts[ts], pe_candles_by_ts[ts]
+        raw = cross_ladder_raw_signals(ce_high, pe_low, c, p)
+        fresh = raw - prev_raw
+
+        if position:
+            px_candle = c if position["side"] == "CE" else p
+            exit_price = exit_reason = None
+            if px_candle.high >= position["target"]:
+                exit_price, exit_reason = position["target"], "target hit"
+            elif px_candle.low <= position["sl"]:
+                exit_price, exit_reason = position["sl"], "SL hit"
+            if exit_price is not None:
+                pnl_pts = exit_price - position["entry"]
+                trades.append({**position, "exit_ts": ts, "exit_price": exit_price,
+                               "exit_reason": exit_reason, "pnl_points": pnl_pts,
+                               "pnl_rupees": pnl_pts * QTY - COST_PER_TRADE_RUPEES})
+                position = None
+
+        if not position and fresh:
+            pe_fresh = [k for (s, k) in fresh if s == "PE"]
+            ce_fresh = [k for (s, k) in fresh if s == "CE"]
+            side = k = None
+            if pe_fresh:
+                side, k = "PE", max(pe_fresh, key=lambda k: ce_high[k])
+            elif ce_fresh:
+                side, k = "CE", max(ce_fresh, key=lambda k: pe_low[k])
+            if side:
+                entry = ce_high[k] if side == "PE" else pe_low[k]
+                sl, tgt = cross_ladder_sl_target(ce_high, pe_low, side, k)
+                if sl is not None and tgt is not None:
+                    position = {"entry_ts": ts, "side": side, "strike": k,
+                                "entry": entry, "sl": sl, "target": tgt}
+        prev_raw = raw
+    return trades
 
 def build_watch_pairs(levels, atm, winning_side):
     """Early-exit rule: for each strike in the ladder (ITM1..ITM6 or OTM1..OTM6),
@@ -988,24 +1034,14 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
         if pe_wins and not (vwap_fn and vwap_fn("PE")):
             pe_wins = False
 
-    if REQUIRE_LADDER_CROSS_ENTRY:
-        if ce_wins and not ladder_cross_confirms(levels, atm, "CE", ce_c.close, pe_c.close):
-            ce_wins = False
-        if pe_wins and not ladder_cross_confirms(levels, atm, "PE", ce_c.close, pe_c.close):
-            pe_wins = False
-
-    if REQUIRE_OWN_SIDE_LADDER_ENTRY:
-        # Deliberately an ALTERNATE trigger, not an extra AND-filter: a
-        # further-strike break on its own is a fresh, independent breakout
-        # signal (per instruction - "take entry when the current value
-        # crosses the levels you marked"), not merely a stricter version of
-        # the ATM-only signal. So this ADDS entries the base rule wouldn't
-        # have found, rather than narrowing the base rule's own entries -
-        # every other stacked filter above still applies first as normal.
-        if not ce_wins and ladder_same_side_confirms(levels, atm, "CE", ce_c.close, pe_c.close):
-            ce_wins = True
-        if not pe_wins and ladder_same_side_confirms(levels, atm, "PE", ce_c.close, pe_c.close):
-            pe_wins = True
+    # Two earlier cross-strike entry filters (REQUIRE_LADDER_CROSS_ENTRY,
+    # REQUIRE_OWN_SIDE_LADDER_ENTRY) were removed from here - both had real
+    # bugs found during backtesting and neither was validated against real
+    # trade data. Replaced by the Cross-Ladder Trade Engine (see
+    # LADDER_CROSS_TRADE_MODE / simulate_cross_ladder_day() above), which
+    # runs as its own standalone simulation rather than a filter stacked on
+    # this ATM-based state machine - its entry price, fresh-cross timing,
+    # and SL/target model don't fit this pipeline's assumptions.
 
     if REQUIRE_FRESH_EXTREME_FOR_ENTRY:
         # Block a stale re-entry: only allow the signal through if spot is
