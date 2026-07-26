@@ -31,6 +31,55 @@ from orb_common import (IST, CANDLE_MINUTES, SIGNAL_STRIKES, STRIKE_GAP, ORB_LOC
                         resample, db, alert, write_state, resolve_future_instrument_key)
 import orb_journal
 
+# ---------------------------------------------------------------------------
+# Classic floor-pivot "stuck" exit (2026-07-26, under review - OFF by
+# default). Trader's rule: if the side we're HOLDING gets stuck (stalls,
+# can't break through) at a classic pivot line (P/R1/R2/S1/S2, computed from
+# the PRIOR day's future high/low/close - standard floor-pivot formula,
+# already verified against the trader's own chart in this session), exit -
+# holding through a stall risks giving back the move. Separately, if we're
+# holding one side and the COMPETITOR (the side we did NOT buy) is the one
+# stuck at a pivot line, also exit - a stalled competitor is read the same
+# way regardless of which side is stuck.
+#
+# "Stuck" = PIVOT_STUCK_CANDLES consecutive closes all within
+# PIVOT_STUCK_PCT of the SAME pivot level. The distance is explicitly NOT a
+# fixed points value - trader confirmed it's context-dependent and can't be
+# pinned to one number - so this uses a percentage of the pivot's own value
+# as a placeholder scale that at least adapts to premium size, same
+# provisional-pending-backtest status as every other threshold in this file
+# (see MAX_ENTRY_MARGIN_POINTS, OI_TREND_MIN_STREAK, etc. above for the
+# pattern of documenting a number as provisional until real data confirms
+# it). Left OFF by default until validated.
+PIVOT_STUCK_EXIT = False
+PIVOT_STUCK_CANDLES = 3
+PIVOT_STUCK_PCT = 0.015   # 1.5% of the pivot's own value - provisional, untuned
+
+def compute_classic_pivots(prev_high, prev_low, prev_close):
+    """Standard floor-pivot formula from the PRIOR trading day's future
+    high/low/close. Returns {"P":.., "R1":.., "R2":.., "S1":.., "S2":..}."""
+    p = (prev_high + prev_low + prev_close) / 3.0
+    r1 = 2 * p - prev_low
+    s1 = 2 * p - prev_high
+    r2 = p + (prev_high - prev_low)
+    s2 = p - (prev_high - prev_low)
+    return {"P": p, "R1": r1, "R2": r2, "S1": s1, "S2": s2}
+
+def is_stuck_at_pivot(recent_closes, pivots, candles=PIVOT_STUCK_CANDLES, pct=PIVOT_STUCK_PCT):
+    """True if the last `candles` closes are ALL within `pct` of the SAME
+    pivot level - a stall, not just a brief touch. Needs at least `candles`
+    closes to evaluate; fewer than that is never "stuck" (not enough
+    history yet, fails closed rather than triggering early)."""
+    if len(recent_closes) < candles:
+        return False
+    window = recent_closes[-candles:]
+    for level in pivots.values():
+        if level == 0:
+            continue
+        if all(abs(c - level) <= abs(level) * pct for c in window):
+            return True
+    return False
+
 def load_day(session_date):
     conn = db()
     row = conn.execute("SELECT atm, sp_high, sp_low FROM orb_summary WHERE session_date=?",
@@ -142,6 +191,47 @@ def ladder_cross_confirms(levels, atm, winning_side, ce_close, pe_close):
             continue
         if w_close > l_rec["high"] and l_close < w_rec["low"]:
             return True
+    return False
+
+# ---------------------------------------------------------------------------
+# Own-side ladder entry confirmation (2026-07-26, under review - OFF by
+# default). Simpler variant of the cross-strike rule above: instead of
+# comparing each side to the OPPOSITE side's level at a further strike (the
+# W_close > L_high@K rule), this compares each side to its OWN level at that
+# strike - literally the same comparison the ATM-only triple confirmation
+# already makes (ce_close > ce_high, pe_close < pe_low), just re-checked at
+# strikes beyond ATM as price moves further, using the marked ladder lines
+# directly: CE_WINS needs ce_close > ce_high@K AND pe_close < pe_low@K, PE_
+# WINS the mirror.
+#
+# Direction matters here and is DIFFERENT from cross_entry_strikes(): CE's
+# own high SHRINKS as strike moves further OTM (above ATM), so scanning that
+# direction makes the check trivially easy to satisfy at almost any price -
+# confirmed by a real bug found backtesting 07-22 (8 false CE entries fired
+# on a day that was clearly bearish, because ce_close only had to clear a
+# tiny far-OTM strike's high). The meaningful direction is each side's own
+# ITM side instead (itm_strikes()) - CE's high only gets HARDER to clear
+# moving toward ITM (below ATM), which is a genuine strength test, mirrored
+# for PE (above ATM).
+REQUIRE_OWN_SIDE_LADDER_ENTRY = False
+
+def ladder_same_side_confirms(levels, atm, winning_side, ce_close, pe_close):
+    """True if SOME strike K in itm_strikes(atm, winning_side) satisfies
+    ce_close > ce_high@K AND pe_close < pe_low@K (CE_WINS) or the mirror
+    (PE_WINS) - both sides compared to their OWN field at strike K, not the
+    cross-plotted fields ladder_cross_confirms() uses. Fails CLOSED if a
+    strike wasn't captured that day."""
+    for k in itm_strikes(atm, winning_side):
+        ce_rec = levels.get((k, "CE"))
+        pe_rec = levels.get((k, "PE"))
+        if not ce_rec or not pe_rec:
+            continue
+        if winning_side == "CE":
+            if ce_close > ce_rec["high"] and pe_close < pe_rec["low"]:
+                return True
+        else:
+            if pe_close > pe_rec["high"] and ce_close < ce_rec["low"]:
+                return True
     return False
 
 def build_watch_pairs(levels, atm, winning_side):
@@ -604,7 +694,8 @@ def _snapshot(session_date, atm, sp_high, sp_low, st, note=""):
     )
 
 def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, session_date,
-                     ltp_fn=None, source="live", oi_trend_fn=None, fut_oi_fn=None, vwap_fn=None):
+                     ltp_fn=None, source="live", oi_trend_fn=None, fut_oi_fn=None, vwap_fn=None,
+                     pivots=None):
     """ce_c / pe_c are the just-closed N-min candles of the ATM CE / ATM PE.
 
     ltp_fn: optional callable(instrument_key) -> float, used only for the
@@ -615,6 +706,10 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
     oi_trend_fn: optional callable(side) -> bool, used only by
     REQUIRE_OI_TREND_CONFIRMATION. Pass None to disable that check (e.g.
     live, until the full-ladder OI poll is built).
+
+    pivots: optional {"P","R1","R2","S1","S2"} dict from
+    compute_classic_pivots(), used only by PIVOT_STUCK_EXIT. Pass None to
+    disable that check (e.g. no prior-day future data available).
 
     source: "live" or "replay" - tags every row this call writes to
     orb_trades/the journal, so a real execution and a backtest simulation
@@ -645,8 +740,15 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
     if st.position:
         p = st.position
         px = ce_c.close if p["side"] == "CE" else pe_c.close
+        competitor_px = pe_c.close if p["side"] == "CE" else ce_c.close
         exit_reason = None
         trigger_strike = None   # set below if the other-strike early exit fires
+
+        # Rolling close history for PIVOT_STUCK_EXIT - tracked every candle
+        # a position is open regardless of whether the check is on, so
+        # turning it on mid-position still has real history to look at.
+        p.setdefault("own_closes", []).append(px)
+        p.setdefault("competitor_closes", []).append(competitor_px)
 
         # Other-strike early exit (±SIGNAL_STRIKES scan) - currently disabled,
         # see ENABLE_OTHER_STRIKE_EARLY_EXIT above.
@@ -678,6 +780,18 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
                               "our target1 - leadership flipped, early exit"
                               % ("PE" if p["side"] == "CE" else "CE", competitor_close,
                                  p["competitor_level"], p["competitor_strike"]))
+
+        # Pivot-stuck exit: either OUR OWN side or the COMPETITOR stalling
+        # at a classic floor-pivot line for PIVOT_STUCK_CANDLES in a row -
+        # holding through a stall risks giving back the move either way.
+        if not exit_reason and PIVOT_STUCK_EXIT and pivots:
+            if is_stuck_at_pivot(p["own_closes"], pivots):
+                exit_reason = "%s stuck at a pivot line for %d candles - early exit" % (
+                    p["side"], PIVOT_STUCK_CANDLES)
+            elif is_stuck_at_pivot(p["competitor_closes"], pivots):
+                competitor_side = "PE" if p["side"] == "CE" else "CE"
+                exit_reason = "competitor %s stuck at a pivot line for %d candles - early exit" % (
+                    competitor_side, PIVOT_STUCK_CANDLES)
 
         # Ladder-line trailing and profit-lock run every candle, BEFORE the
         # zone-reentry check below - so a trade that has already locked in
@@ -879,6 +993,19 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
             ce_wins = False
         if pe_wins and not ladder_cross_confirms(levels, atm, "PE", ce_c.close, pe_c.close):
             pe_wins = False
+
+    if REQUIRE_OWN_SIDE_LADDER_ENTRY:
+        # Deliberately an ALTERNATE trigger, not an extra AND-filter: a
+        # further-strike break on its own is a fresh, independent breakout
+        # signal (per instruction - "take entry when the current value
+        # crosses the levels you marked"), not merely a stricter version of
+        # the ATM-only signal. So this ADDS entries the base rule wouldn't
+        # have found, rather than narrowing the base rule's own entries -
+        # every other stacked filter above still applies first as normal.
+        if not ce_wins and ladder_same_side_confirms(levels, atm, "CE", ce_c.close, pe_c.close):
+            ce_wins = True
+        if not pe_wins and ladder_same_side_confirms(levels, atm, "PE", ce_c.close, pe_c.close):
+            pe_wins = True
 
     if REQUIRE_FRESH_EXTREME_FOR_ENTRY:
         # Block a stale re-entry: only allow the signal through if spot is
