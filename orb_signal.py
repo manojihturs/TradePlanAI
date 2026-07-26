@@ -96,6 +96,54 @@ def ladder_lines(levels, atm, winning_side):
     numbers the traded contract's own premium is compared against."""
     return [d["level"] for d in ladder_strikes_ordered(levels, atm, winning_side)]
 
+# ---------------------------------------------------------------------------
+# Ladder-cross entry confirmation (2026-07-26, under review - OFF by
+# default). Trader's rule, confirmed against a real example (ATM 23800,
+# entry at strike 23700): "CE crosses UP through a further strike's PE-low
+# WHILE PE crosses DOWN through that same strike's CE-high -> that's a real
+# CE trade" (and the mirror for PE). In general terms (W = the side about to
+# be bought, L = the other side), at some strike K:
+#     W_close > L_high@K   AND   L_close < W_low@K
+# This is DIFFERENT from the existing ATM-only triple confirmation (which
+# compares each side to its OWN 9:15 high/low at ATM only) - this checks
+# whether the move is strong enough to ALSO break a cross-plotted reference
+# at a strike beyond ATM. Confirmed to run as an ADDITIONAL filter stacked
+# on top of the existing triple confirmation, not a replacement - same
+# convention as REQUIRE_OI_TREND_CONFIRMATION / REQUIRE_VWAP_CONFIRMATION.
+#
+# Scan direction: strikes are walked in the DIRECTION OF THE MOVE from ATM
+# (CE_WINS -> above ATM, PE_WINS -> below ATM) - matching the confirmed
+# example (23700 is below ATM 23800, and that trade was PE_WINS/bearish),
+# NOT each side's own classical ITM direction (which is the opposite way
+# for PE - see itm_strikes(), used separately by ITM_ONLY_LADDER).
+REQUIRE_LADDER_CROSS_ENTRY = False
+
+def cross_entry_strikes(atm, winning_side, n=SIGNAL_STRIKES):
+    """Strikes walked in the direction the move is going: CE_WINS -> above
+    ATM, PE_WINS -> below ATM. Deliberately the OPPOSITE convention from
+    itm_strikes() (classical per-instrument ITM direction) - the two serve
+    different rules and should not be confused with each other."""
+    step = STRIKE_GAP if winning_side == "CE" else -STRIKE_GAP
+    return [atm + i * step for i in range(1, n + 1)]
+
+def ladder_cross_confirms(levels, atm, winning_side, ce_close, pe_close):
+    """True if SOME strike K in cross_entry_strikes() satisfies
+    W_close > L_high@K AND L_close < W_low@K (see module note above).
+    Fails CLOSED (no confirmation) if a strike wasn't captured that day -
+    missing data is not a free pass, same policy as every other filter
+    here. Checked nearest-to-ATM first, but any match is sufficient."""
+    losing_side = "PE" if winning_side == "CE" else "CE"
+    w_close = ce_close if winning_side == "CE" else pe_close
+    l_close = pe_close if winning_side == "CE" else ce_close
+    for k in cross_entry_strikes(atm, winning_side):
+        l_rec = levels.get((k, losing_side))
+        w_rec = levels.get((k, winning_side))
+        if not l_rec or not w_rec:
+            continue
+        if w_close > l_rec["high"] and l_close < w_rec["low"]:
+            return True
+    return False
+
 def build_watch_pairs(levels, atm, winning_side):
     """Early-exit rule: for each strike in the ladder (ITM1..ITM6 or OTM1..OTM6),
     pair its OWN (strike, instrument_key) with the NEXT strike's level. If that
@@ -824,6 +872,12 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
         if ce_wins and not (vwap_fn and vwap_fn("CE")):
             ce_wins = False
         if pe_wins and not (vwap_fn and vwap_fn("PE")):
+            pe_wins = False
+
+    if REQUIRE_LADDER_CROSS_ENTRY:
+        if ce_wins and not ladder_cross_confirms(levels, atm, "CE", ce_c.close, pe_c.close):
+            ce_wins = False
+        if pe_wins and not ladder_cross_confirms(levels, atm, "PE", ce_c.close, pe_c.close):
             pe_wins = False
 
     if REQUIRE_FRESH_EXTREME_FOR_ENTRY:
