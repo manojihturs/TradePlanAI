@@ -45,6 +45,20 @@ def load_day(session_date):
         lv[(strike, side)] = {"key": ikey, "high": fh, "low": flo}
     return atm, sp_high, sp_low, lv
 
+# Off by default - see itm_strikes() below for why this exists.
+ITM_ONLY_LADDER = False
+
+def itm_strikes(atm, side, n=SIGNAL_STRIKES):
+    """Strikes from ATM walking toward in-the-money for `side`, n deep - CE
+    is ITM BELOW atm (a lower strike has more intrinsic value for a call),
+    PE is ITM ABOVE atm (mirror). Added 2026-07-26 per the trader's own
+    marking convention (spreadsheet screenshot: 'ATM to ITM', OTM strikes
+    not marked at all) - used by ladder_strikes_ordered/pivot_ladder ONLY
+    when ITM_ONLY_LADDER is on; default behavior still scans the full
+    ATM +/- SIGNAL_STRIKES range on both sides."""
+    step = -STRIKE_GAP if side == "CE" else STRIKE_GAP
+    return [atm + i * step for i in range(1, n + 1)]
+
 def ladder_strikes_ordered(levels, atm, winning_side):
     """The trader's actual cross-plotted ladder (confirmed in chat):
       TOP    (CE_WINS, holding the CALL) -> watch the PUT's first-5min LOW
@@ -57,13 +71,20 @@ def ladder_strikes_ordered(levels, atm, winning_side):
     holding, rather than a self-referential extrapolation of its own decay.
     ATM itself is excluded (its opposite-side low is already the entry's own
     triple-confirmation condition, not a further target). Returns
-    (strike, instrument_key, level) ascending by level."""
+    (strike, instrument_key, level) ascending by level.
+
+    Under ITM_ONLY_LADDER, the strike range is restricted to the OPPOSITE
+    side's own ITM direction (per the trader's marking convention: PE-low
+    is only marked on the CALL chart for PE strikes ITM relative to ATM,
+    i.e. above ATM - not the OTM side below it), instead of the full +/-
+    SIGNAL_STRIKES scan on both sides."""
     opposite_side = "PE" if winning_side == "CE" else "CE"
+    if ITM_ONLY_LADDER:
+        strikes = itm_strikes(atm, opposite_side)
+    else:
+        strikes = [atm + i * STRIKE_GAP for i in range(-SIGNAL_STRIKES, SIGNAL_STRIKES + 1) if i != 0]
     out = []
-    for i in range(-SIGNAL_STRIKES, SIGNAL_STRIKES + 1):
-        if i == 0:
-            continue
-        k = atm + i * STRIKE_GAP
+    for k in strikes:
         rec = levels.get((k, opposite_side))
         if rec:
             out.append({"strike": k, "key": rec["key"], "level": rec["low"]})
@@ -173,12 +194,16 @@ def pivot_ladder(levels, atm, winning_side):
     reads levels[(K, winning_side)]["high"] (our OWN side, at other
     strikes) instead of the opposite side's low - this is the same field
     competitor_reference() already reads for a single strike, generalized
-    across the whole ladder so SL can ratchet through more than one rung."""
+    across the whole ladder so SL can ratchet through more than one rung.
+
+    Under ITM_ONLY_LADDER, restricted to winning_side's own ITM direction
+    (see itm_strikes()) instead of the full +/- SIGNAL_STRIKES scan."""
+    if ITM_ONLY_LADDER:
+        strikes = itm_strikes(atm, winning_side)
+    else:
+        strikes = [atm + i * STRIKE_GAP for i in range(-SIGNAL_STRIKES, SIGNAL_STRIKES + 1) if i != 0]
     out = []
-    for i in range(-SIGNAL_STRIKES, SIGNAL_STRIKES + 1):
-        if i == 0:
-            continue
-        k = atm + i * STRIKE_GAP
+    for k in strikes:
         rec = levels.get((k, winning_side))
         if rec:
             out.append({"strike": k, "key": rec["key"], "level": rec["high"]})
@@ -189,9 +214,17 @@ def initial_pivot_sl(levels, atm, side, entry, fallback):
     """Highest same-side pivot level that is still BELOW entry (the nearest
     rung already cleared to get here) - that's the initial SL under
     MAX_PROFIT_LADDER_TRAIL. Falls back to the normal fixed-points SL if no
-    pivot sits below entry (e.g. a trade that fires very close to ATM)."""
+    pivot sits below entry (e.g. a trade that fires very close to ATM).
+
+    Capped 2026-07-26 after backtesting 07-24: a raw pivot can land BELOW
+    entry - SL_POINTS (looser than the fixed stop, not tighter), which
+    defeats the point of using a level-based stop at all - one live trade
+    that day lost 3.5pts more than the fixed-SL baseline for exactly this
+    reason. The pivot is only ever allowed to TIGHTEN the stop, never
+    loosen it - take whichever of pivot/fallback is higher (closer to
+    entry)."""
     below = [d["level"] for d in pivot_ladder(levels, atm, side) if d["level"] < entry]
-    return max(below) if below else fallback
+    return max(max(below), fallback) if below else fallback
 
 def next_pivot_sl(levels, atm, side, px, current_sl):
     """Ratchets the SL up to the highest pivot rung still below the current
@@ -199,6 +232,24 @@ def next_pivot_sl(levels, atm, side, px, current_sl):
     moves forward, same guarantee as the existing MIN_PROFIT_POINTS trail)."""
     below = [d["level"] for d in pivot_ladder(levels, atm, side) if d["level"] < px]
     return max(below + [current_sl]) if below else current_sl
+
+# ---------------------------------------------------------------------------
+# Momentum-gated ride mode (2026-07-26, under review - OFF by default).
+#
+# Backtested 07-08 and 07-24: unconditionally riding the ladder from entry
+# (MAX_PROFIT_LADDER_TRAIL) is a trend-follower's trade-off - it gives back a
+# little on choppy days but multiplies the win on a real trend day (07-08:
+# baseline banked +60.30pts at LINE 1, unconditional-ride banked +216.75pts
+# on the identical entry, because the move kept going for another hour).
+# The risk is paying that "give back a little" cost on EVERY trade just to
+# catch the rare trend day. This middle ground only pays that cost when the
+# LINE 1 cross itself already shows real momentum: if the confirming close
+# clears LINE 1 by more than MOMENTUM_MARGIN_POINTS (a hard breakout, not a
+# graze), switch into ride mode (pivot-trailing SL, no more early exits) -
+# otherwise take the LINE 1 win immediately exactly like baseline. Days that
+# never produce a decisive LINE 1 cross behave IDENTICALLY to baseline.
+RIDE_ON_MOMENTUM = False
+MOMENTUM_MARGIN_POINTS = 10.0   # provisional - not yet tuned against data
 
 class DayState:
     def __init__(self):
@@ -599,6 +650,29 @@ def on_candle_close(ts, ce_c, pe_c, atm, sp_high, sp_low, levels, st, conn, sess
                 p["crossed"] += 1
                 p["lines"].pop(0)
             p["trail"] = next_pivot_sl(levels, atm, p["side"], px, p["trail"])
+        elif RIDE_ON_MOMENTUM:
+            if p.get("riding"):
+                # Already switched into ride mode on an earlier candle - keep
+                # riding through every further rung, same mechanics as
+                # MAX_PROFIT_LADDER_TRAIL from here on.
+                while p["lines"] and px >= p["lines"][0]:
+                    p["crossed"] += 1
+                    p["lines"].pop(0)
+                p["trail"] = next_pivot_sl(levels, atm, p["side"], px, p["trail"])
+            elif not exit_reason and p["lines"] and px >= p["lines"][0]:
+                crossed = p["lines"][0]
+                margin = px - crossed
+                if margin > MOMENTUM_MARGIN_POINTS:
+                    # Decisive breakout through LINE 1, not a graze - trust
+                    # it as a real trend and switch to riding instead of
+                    # taking the small win now.
+                    p["riding"] = True
+                    p["crossed"] += 1
+                    p["lines"].pop(0)
+                    p["trail"] = next_pivot_sl(levels, atm, p["side"], px, p["trail"])
+                else:
+                    p["crossed"] += 1
+                    exit_reason = "LINE 1 target hit (%.2f) - confirmed, exit now" % crossed
         elif not exit_reason and p["lines"] and px >= p["lines"][0]:
             crossed = p["lines"][0]
             p["crossed"] += 1
