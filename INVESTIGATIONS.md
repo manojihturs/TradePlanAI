@@ -215,3 +215,409 @@ treated as one design question when decided on, not three independent
 ones.
 
 No fixes or implementation changes are proposed in this review.
+
+---
+
+## Investigation #8 — Mapping Validity Threshold
+
+**Status: CLOSED (investigation-only, no code modified, no fixes proposed)**
+
+### Subject
+
+Investigations #5-#7 established that the Premium Mapping ratio (mapped
+value ÷ own traded premium) diverges with distance from ATM, and that the
+divergence accelerates. This investigation asks whether a clean threshold
+distance exists where the mapping "breaks," and re-examines the target/stop
+inversion anomaly averages surfaced in Investigation #7 at the individual
+record level rather than the aggregate level.
+
+### Method
+
+Same 18-session dataset as Investigation #7 (936 individual mapped-value
+records across all 4 anchor/side ladder combinations, 13 strikes per
+session). For every record: computed the ratio (mapped value ÷ own traded
+premium), checked for a genuine per-record inversion (target < entry, or
+stop > entry), and computed the percentage of records exceeding 1.1x,
+1.25x, 1.5x, and 2.0x thresholds at each distance.
+
+### Results
+
+| Dist | Avg Ratio | Min Ratio | Max Ratio | Inversions | N | >1.1x | >1.25x | >1.5x | >2.0x |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 1.030 | 0.485 | 2.008 | 0 | 72 | 37.5% | 22.2% | 4.2% | 1.4% |
+| 1 | 1.055 | 0.325 | 2.897 | 0 | 144 | 38.9% | 27.1% | 12.5% | 2.1% |
+| 2 | 1.149 | 0.219 | 4.117 | 0 | 144 | 45.8% | 38.2% | 28.5% | 8.3% |
+| 3 | 1.294 | 0.149 | 6.160 | 0 | 144 | 48.6% | 45.1% | 40.3% | 23.6% |
+| 4 | 1.535 | 0.100 | 8.884 | 0 | 144 | 50.0% | 48.6% | 46.5% | 36.8% |
+| 5 | 1.877 | 0.069 | 12.784 | 0 | 144 | 50.0% | 50.0% | 47.9% | 43.1% |
+| 6 | 2.303 | 0.048 | 18.086 | 0 | 144 | 50.0% | 50.0% | 50.0% | 47.2% |
+
+### Findings
+
+1. **No per-record inversions found anywhere (0 at every distance).** This
+   corrects Investigation #7's aggregate observation: the "average target <
+   average entry" seen there at distance 6 was an artifact of averaging
+   mismatched anchor/side combinations at the ladder edge (some records had
+   no target, some had no stop), not an actual inversion on any individual
+   mapped value.
+2. **The real structural break is variance, not the average.** Even at
+   distance 0 (ATM), ratios already range from 0.485 to 2.008. By distance
+   6, the range is 0.048 to 18.086 — roughly a 375x spread within the same
+   distance bucket.
+3. **Threshold crossings plateau near 50% by distance 4-5**, not 6 — the
+   1.1x/1.25x/1.5x crossing rates saturate there, meaning distance beyond
+   4-5 mainly widens the extremes (the >2.0x rate keeps climbing) rather
+   than adding new mid-range divergence.
+4. **No single clean breakpoint distance exists.** Divergence is present
+   even at distance 0 and grows continuously in both average and spread;
+   there is no distance at which the mapping is perfectly scale-consistent.
+
+### Conclusion
+
+The live CE@23650 incident (ratio ≈27.8x) falls within — even below — the
+maximum ratio already present in this historical dataset at distance 6
+(18.086 was the observed max, and the true tail is evidently wider than
+that sample caught). Such an outcome was mathematically always possible at
+that distance; it had simply never been realized in the 18 sessions sampled
+until the live occurrence.
+
+### Disposition
+
+Marked **CLOSED**. No strategy code was modified as a result of this
+investigation. Classification: Strategy specification gap (same underlying
+gap as Investigations #5-#7 — the mapping rule was never bounded to a
+distance/ratio range where it remains meaningful).
+
+---
+
+## Investigation #9 — Competitor Exit Validation
+
+**Status: CLOSED (investigation-only, no code modified)**
+
+### Subject
+
+For the CE@23950 trade open during today's (2026-07-27) live paper
+trading session (entry 72.05), verify whether Module 4 (Exit Signal)
+implements a competitor-based exit rule (i.e. exiting because the
+corresponding PE at the same strike reached some mapped level).
+
+### Task 1 — Identify the competitor exit level per the original specification
+
+There is no competitor exit level anywhere in the specification, and
+none was ever defined. The original Module 4 build instruction stated
+explicitly:
+
+> "Exit priority 1 Target 2 Mapped Stop Loss ... Never use Trailing
+> Stop / Competitor Movement / OI / Synthetic Future / Indicators /
+> Time Exit / Unless explicitly requested."
+
+`strategy/exit_signal.py`'s own module docstring documents the same
+exclusion: "This module contains NO trailing stop, competitor-movement,
+OI, synthetic-future, indicator, or time-based exit logic - out of
+scope by specification unless explicitly requested."
+
+Since no competitor exit level was ever specified, Task 1 cannot be
+completed with a concrete value - no rule defines "the mapped level one
+position below" for the competitor (PE) side, no field carries it in
+`PremiumMapping`, and no method computes it. Per the standing "never
+invent a rule" instruction, none is defined here.
+
+### Task 2 & 3 — Trace every candle after entry; was the condition evaluated?
+
+`check_exit()` (`strategy/exit_signal.py:172-203`) is the only function
+that decides an exit:
+
+```python
+if candle.high >= levels.target:
+    return ExitSignal(..., reason=ExitReason.TARGET, ...)
+if candle.low <= levels.stop_loss:
+    return ExitSignal(..., reason=ExitReason.STOP_LOSS, ...)
+return None
+```
+
+- `candle` is the traded contract's own CE candle - `check_exit` never
+  receives a PE candle, and `PositionManager.process_candle` (its only
+  caller) never passes one either.
+- `ExitLevels` carries exactly two fields: `target`, `stop_loss`. No
+  third field for a competitor threshold exists.
+
+The competitor-PE condition was not evaluated on any candle - not
+because it failed silently, but because no code path in Modules 4 or 5
+ever receives or inspects the PE side of an open CE position. This is
+"missing logic" only in the sense that it was never specified to
+exist; per Task 1, it is an intentional exclusion from the original
+spec, not an omission or defect.
+
+### Task 4 — What does the current implementation check?
+
+Only Target and Mapped Stop Loss, at every layer that performs an exit
+check (Module 4's `check_exit`, Module 5's `PositionManager.process_candle`,
+and Module 11's `LivePaperTradingEngine.on_candle_close`, which mirrors
+the same two-condition check). No Competitor Exit exists anywhere in
+the current implementation.
+
+### Conclusion
+
+Module 4 correctly implements what was specified - Target and Stop
+Loss only. "Competitor Exit" is not a gap or defect relative to the
+original specification; it is a rule that was explicitly named and
+explicitly excluded at build time. Adding it would require a new,
+fully specified business rule (what counts as "the competitor," which
+field/ladder defines its threshold, exit priority relative to
+Target/Stop) - not a bug fix.
+
+### Disposition
+
+Marked **CLOSED**. No strategy code was modified as a result of this
+investigation. Classification: Accepted limitation (explicitly excluded
+from scope at specification time, not a specification gap).
+
+---
+
+## Investigation #11 — Competitor Exit Logic Validation
+
+**Status: CLOSED (investigation-only, no code modified, no optimisation performed)**
+
+### Subject
+
+Version 1.1's regression report (2026-07-27) showed Net P&L declining
+~50% against Version 1.0 on the 18-session historical dataset, with 17
+trades that were TARGET wins under V1.0 becoming COMPETITOR_EXIT under
+V1.1. This investigation determines whether that regression stems from
+an implementation defect, or from the implementation faithfully
+executing a specification that does not match the originally intended
+TradingView behaviour.
+
+### Two competing interpretations of "competitor touch"
+
+- **A. Immediate exit trigger** - the moment the competitor's price
+  touches the mapped level, exit unconditionally, independent of the
+  traded contract's own current price.
+- **B. Mathematical confirmation** - the competitor touch merely
+  confirms the traded contract has already entered its expected profit
+  zone; exiting on it should never itself produce a loss (only the
+  original Stop Loss should).
+
+### Items 1-5: implementation correctness
+
+All 17 TARGET(V1.0)->COMPETITOR_EXIT(V1.1) trades were independently
+re-derived from raw historical data (same-anchor opposite-side ladder,
+adjacent-rung-by-value threshold, competitor's own LOW field) and
+cross-checked against the actually fetched competitor candle at the
+recorded trigger timestamp.
+
+| Check | Result |
+|---|---|
+| Correct competitor ladder | Correct in all 17 |
+| Correct competitor level (source strike + value) | Correct in all 17 |
+| "Next lower level" = adjacent rung by VALUE | Correct in all 17 |
+| Correct candle field (competitor's own LOW) | Correct in all 17 |
+| Competitor genuinely touching that level | TOUCHING = True in all 17 |
+
+**No implementation bug exists.** The code executes the Version 1.1
+specification exactly as written.
+
+### Items 6-7: was the traded contract already in its profit zone?
+
+For each of the 17 trades, the traded contract's own candle at the
+exact Competitor Exit trigger moment was checked against its own
+Target:
+
+- **In 10 of 17 cases (59%), the traded contract's own candle HIGH had
+  not yet reached Target on the trigger candle** - Competitor Exit
+  fired while the trade was still meaningfully below its profit target.
+  This matches interpretation A, not B.
+- **In 5 of 17 cases (29%), the trade closed at a net LOSS under
+  Version 1.1** despite V1.0 recording a genuine Target win on the
+  identical entry (2026-07-06, 2026-07-16 11:15, 2026-07-20 11:35,
+  2026-07-21, 2026-07-23 12:05) - directly contradicting the stated
+  principle that Competitor Exit should never convert a winner into a
+  loser.
+- **A secondary, compounding effect**: in the remaining 7 of 17 cases
+  where Target WAS reached within the trigger candle, the exit price
+  (per Version 1.1's `CANDLE_APPROXIMATION` rule, using the traded
+  contract's own candle OPEN) still understates the achieved move,
+  since OPEN precedes the target-reaching price action within that
+  candle.
+
+### Root cause
+
+Not an implementation defect. The root cause is a **mismatch between
+the Version 1.1 specification as written and approved, and the
+originally intended TradingView behaviour as now described**:
+
+- Version 1.1 was specified, and the code correctly implements, an
+  unconditional threshold trigger - interpretation A.
+- The originally intended behaviour, as now described, is
+  interpretation B - Competitor Exit as confirmation only, gated on
+  the traded contract's own profit-zone status.
+
+The measured regression (Net P&L -49%, 5/17 winners converted to
+losers) is the direct, expected consequence of interpretation A on
+this historical dataset - not a bug in how interpretation A was coded.
+
+### Disposition
+
+Marked **CLOSED**. No strategy code was modified and no optimisation
+was performed. Classification: Strategy specification gap between the
+Version 1.1 request as written and the originally intended TradingView
+behaviour. Whether to revise the business rule (e.g. gate Competitor
+Exit on profit-zone status) or accept interpretation A as intended is
+a decision for the strategy owner, not addressed by this investigation.
+
+---
+
+## Investigation #12 — Define Profit Zone
+
+**Status: CLOSED (investigation-only, no code modified, no optimisation, no threshold invented)**
+
+### Subject
+
+Following Investigation #11's finding that Competitor Exit currently
+behaves as an unconditional trigger (interpretation A) rather than a
+profit-zone confirmation (interpretation B), this investigation asks
+whether historical evidence supports deriving an exact, non-invented
+condition under which Competitor Touch always represents a profitable
+exit.
+
+### Method
+
+For every one of the 34 historical Competitor Exit trades (18
+sessions, Version 1.1), recomputed Target directly from the actual
+Premium Mapping and computed how far the traded contract's own price
+had travelled toward its own Target at the moment of trigger
+(`progress_ratio = (exit_premium - entry_premium) / (target - entry_premium)`).
+
+### Results
+
+| | Count | % |
+|---|---:|---:|
+| Total competitor exits | 34 | 100% |
+| Reached or exceeded own Target at trigger | 1 | 2.9% |
+| Profitable (exit price > entry price) | 21 | 61.8% |
+| Profitable but did NOT reach Target | 20 | 58.8% |
+| Unprofitable | 13 | 38.2% |
+
+Progress-ratio range: unprofitable trades -60.6% to 0.0%; profitable
+trades +2.7% to +239.6%.
+
+### Finding: no independent predictive relationship exists
+
+The apparent split at the 0% progress-ratio boundary is **circular,
+not predictive** - `progress_ratio > 0` is mathematically identical to
+`exit_premium > entry_premium`, which is identical to "profitable," by
+definition of P&L. It is not derivable in advance from the mapped
+levels or competitor structure; it can only be known after observing
+the very outcome it would need to predict.
+
+Beyond that trivial boundary, no usable margin exists. Adjacent-outcome
+trades sit on opposite sides of the zero line only a few premium
+points apart (e.g. 2026-07-24 14:10: +2.7% progress, profitable
++Rs42; 2026-07-06 10:45: -4.2% progress, unprofitable -Rs29) - no gap
+or threshold in the data would cleanly separate them.
+
+Reaching Target itself is essentially unrelated to Competitor Touch:
+in 33 of 34 cases (97.1%) the competitor threshold was touched while
+the traded contract's own price was nowhere near its Target. This
+reflects the ladders' construction from independent fields (own price
+vs. the opposite contract's cross-referenced rung) - there is no
+structural guarantee that one reaching its threshold implies any
+particular fraction of the other's own distance to Target.
+
+### Conclusion
+
+**The historical data does not support a consistent mathematical
+relationship under which Competitor Touch always represents a
+profitable exit.** No percentage-of-target, premium-ratio, or
+ladder-distance threshold in the data shows a clean, reliable
+separating margin. Per instruction, no threshold is proposed or
+invented.
+
+### Disposition
+
+Marked **CLOSED**. No strategy code was modified, no optimisation was
+performed, and no threshold was invented. Classification: Strategy
+specification gap (unresolved) - if a "Competitor Exit must always be
+profitable" invariant is required, the evidence here does not support
+achieving it through a numerical gate on progress-toward-target or
+premium ratios alone. Deciding how to proceed (accept interpretation A,
+redesign the rule around a different mechanism, or drop Competitor
+Exit as specified) is a decision for the strategy owner.
+
+---
+
+## Investigation #13 — Validate the Mathematical Equivalence
+
+**Status: CLOSED (investigation-only, no code modified, no optimisation, Premium Mapping mathematics only)**
+
+### Subject
+
+Rather than continue analysing Competitor Exit as an independent price
+trigger, verify the underlying mathematical assumption: is CE Target
+mathematically equivalent to the PE mapped competitor level? No P&L,
+candle progress, or profit ratios analysed - Premium Mapping
+mathematics only, for all 64 historical trades.
+
+### 1. Field used (structural - true for every trade by construction)
+
+Target always comes from the entry's OWN ladder (the field the entry
+itself was confirmed against); Competitor Level always comes from the
+SAME-anchor, OPPOSITE-side ladder (a different field). E.g. TOP CE:
+Target from `top_ce_ladder` (PE_Low), Competitor from `top_pe_ladder`
+(CE_High).
+
+**Measured: Target and Competitor used the same field 0 of 64 times
+(0.0%).** This follows directly from `premium_mapping.py`'s
+construction and is not data-dependent - they can never be the same
+field.
+
+### 2. Source strike (data-dependent)
+
+**Target's and Competitor's source strike coincided 49 of 64 times
+(76.6%)** - a real but coincidental finding, arising because each
+field is locally close to monotonic with strike near the money, not
+because the two quantities are related.
+
+### 3. Magnitude of movement (this is where the mapping diverges)
+
+Even where the source strike coincided, the point-distance to Target
+and the point-distance to the Competitor trigger were not equal or
+proportionally related:
+
+`delta_competitor / delta_target` ratio across 64 trades: **min 0.039,
+max 30.824, mean 1.523** - a ~790x spread. Examples: 2026-07-08
+24250 CE BOTTOM (ratio 0.04x - competitor needs almost no move at all);
+2026-07-08 24200 PE BOTTOM (ratio 30.82x - competitor needs a
+30x-larger move than Target). If the two represented the same mapped
+movement, this ratio would cluster near 1.0; it does not.
+
+### Root cause of the divergence
+
+Target and Competitor Level are built from genuinely independent
+premium series - two separate option legs' price action - with nothing
+in Module 2's construction tying their movements together numerically.
+They coincidentally share a neighbouring source strike most of the
+time (local monotonicity), but never share field, and never share
+magnitude.
+
+### Conclusion
+
+**CE Target and the PE mapped competitor level are not mathematically
+equivalent.** They diverge in field (always) and in magnitude
+(~790x spread even at matching source strikes). This gives the
+underlying mechanical explanation for Investigation #11 and #12's
+empirical findings that Competitor Touch rarely coincides with the
+traded contract reaching its own profit zone - the two quantities were
+never mathematically linked to begin with.
+
+### Disposition
+
+Marked **CLOSED**. No strategy code was modified, no optimisation was
+performed. Classification: Strategy specification gap - the assumption
+that a competitor touch represents "the same mapped movement" as
+reaching Target is not supported by the Premium Mapping's own
+mathematics. Whether the original TradingView strategy intended a
+different definition of "competitor level," or whether Competitor Exit
+as specified should be reconsidered, is a decision for the strategy
+owner - this investigation identifies where the mapping diverges, not
+what to do about it.
