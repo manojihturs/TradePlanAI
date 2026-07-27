@@ -1,0 +1,13 @@
+# Development dependencies for trading_engine.
+# Mirrors the [project.optional-dependencies].dev table in
+# pyproject.toml - kept in sync manually since this milestone does not
+# introduce a lockfile tool (see
+# docs/architecture/PYTHON_IMPLEMENTATION_GUIDE.md Section 4).
+#
+# Install with: pip install -r requirements-dev.txt
+
+pytest>=8.0
+pytest-cov>=5.0
+mypy>=1.10
+ruff>=0.5
+black>=24.0

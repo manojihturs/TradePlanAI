@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trading-engine"
+version = "0.1.0"
+description = "Trading Strategy Engine - reconstructed TradingView methodology (Domain layer, Milestone 4.1)."
+requires-python = ">=3.12"
+readme = "README.md"
+dependencies = []
+
+# Milestone 4.1 scope: the `domain` package has zero third-party
+# dependencies by design - see
+# docs/architecture/PYTHON_IMPLEMENTATION_GUIDE.md Section 4
+# ("No dependency belongs in domain/"). Standard library only:
+# dataclasses, enum, typing, uuid, datetime, decimal, pathlib.
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "mypy>=1.10",
+    "ruff>=0.5",
+    "black>=24.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["trading_engine*"]
+
+[tool.mypy]
+strict = true
+files = [
+    "trading_engine/domain",
+    "trading_engine/rules",
+    "trading_engine/engine",
+    "trading_engine/calculators",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.pytest.ini_options]
+testpaths = ["trading_engine/tests"]
+
+[tool.coverage.run]
+source = [
+    "trading_engine.domain",
+    "trading_engine.rules",
+    "trading_engine.engine",
+    "trading_engine.calculators",
+]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 100
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+]
