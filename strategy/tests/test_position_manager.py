@@ -126,5 +126,55 @@ class PositionManagerTests(unittest.TestCase):
         self.assertEqual(position.exit_levels.stop_loss, 206.35)
 
 
+class PositionManagerCompetitorExitTests(unittest.TestCase):
+    """Version 1.1 - Competitor Exit wiring through PositionManager.
+
+    Uses the same PE@24050 TOP-anchor entry as PositionManagerTests
+    (target=238.75, stop_loss=176.85). Its Competitor Exit threshold
+    (TOP_CE ladder, source_strike=24000, trigger_level=94.40) is
+    computed automatically by ``open()``.
+    """
+
+    def setUp(self) -> None:
+        self.mapping = _make_mapping()
+        self.manager = PositionManager()
+        self.entry = EntrySignal(
+            timestamp=datetime(2026, 7, 22, 9, 25), strike=24050,
+            side=TradeSide.PE, anchor=MappingAnchor.TOP,
+            ce_level=114.00, pe_level=206.35,
+        )
+
+    def test_open_computes_competitor_level(self) -> None:
+        position = self.manager.open(self.entry, self.mapping)
+        self.assertIsNotNone(position.competitor_level)
+        self.assertEqual(position.competitor_level.ladder_name, "TOP_CE")
+        self.assertEqual(position.competitor_level.source_strike, 24000)
+        self.assertEqual(position.competitor_level.trigger_level, 94.40)
+
+    def test_competitor_exit_closes_position_over_target(self) -> None:
+        self.manager.open(self.entry, self.mapping)
+        own_candle = Candle(230.0, 240.0, 225.0, 238.75)   # would hit TARGET alone
+        competitor_candle = Candle(100.0, 101.0, 90.0, 95.0)  # CE low 90 <= 94.40
+        closed = self.manager.process_candle(datetime(2026, 7, 22, 9, 45), own_candle, competitor_candle)
+        self.assertIsNotNone(closed)
+        self.assertEqual(closed.exit.reason, ExitReason.COMPETITOR_EXIT)
+        self.assertEqual(closed.exit.exit_price, 230.0)  # own candle's OPEN
+        self.assertTrue(self.manager.is_flat)
+
+    def test_no_competitor_candle_keeps_target_stop_only_behavior(self) -> None:
+        self.manager.open(self.entry, self.mapping)
+        own_candle = Candle(230.0, 240.0, 225.0, 238.75)
+        closed = self.manager.process_candle(datetime(2026, 7, 22, 9, 45), own_candle)
+        self.assertIsNotNone(closed)
+        self.assertEqual(closed.exit.reason, ExitReason.TARGET)
+
+    def test_competitor_not_triggered_falls_through_to_target(self) -> None:
+        self.manager.open(self.entry, self.mapping)
+        own_candle = Candle(230.0, 240.0, 225.0, 238.75)
+        competitor_candle = Candle(120.0, 122.0, 110.0, 115.0)  # CE low 110 > 94.40 - no trigger
+        closed = self.manager.process_candle(datetime(2026, 7, 22, 9, 45), own_candle, competitor_candle)
+        self.assertEqual(closed.exit.reason, ExitReason.TARGET)
+
+
 if __name__ == "__main__":
     unittest.main()

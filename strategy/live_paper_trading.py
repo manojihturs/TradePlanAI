@@ -141,6 +141,11 @@ class LiveTradeRecord:
             when the position closes; ``None`` while still open.
         running_pnl_rupees: PnL for this trade in rupees, using the
             configured lot size. ``None`` while still open.
+        competitor_ladder, competitor_strike, competitor_trigger_level,
+            competitor_trigger_price, pricing_method: (Version 1.1)
+            Populated only when ``exit_reason == "COMPETITOR_EXIT"` -
+            see ``exit_signal.ExitSignal`` for field meanings. ``None``
+            for TARGET/STOP_LOSS exits and while still open.
     """
 
     strike: int
@@ -154,6 +159,11 @@ class LiveTradeRecord:
     exit_premium: Optional[float] = None
     exit_reason: Optional[str] = None
     running_pnl_rupees: Optional[float] = None
+    competitor_ladder: Optional[str] = None
+    competitor_strike: Optional[int] = None
+    competitor_trigger_level: Optional[float] = None
+    competitor_trigger_price: Optional[float] = None
+    pricing_method: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -235,10 +245,12 @@ class LivePaperTradingEngine:
         if self.manager.is_open:
             position = self.manager.current_position
             side_candles = ce_candles if position.entry.side is TradeSide.CE else pe_candles
+            competitor_candles = pe_candles if position.entry.side is TradeSide.CE else ce_candles
             candle = side_candles.get(position.entry.strike)
+            competitor_candle = competitor_candles.get(position.entry.strike)
             if candle is not None:
                 self._pending_exit_levels = position.exit_levels
-                closed = self.manager.process_candle(ts, candle)
+                closed = self.manager.process_candle(ts, candle, competitor_candle)
                 if closed is not None:
                     pnl_rupees = self.capital.release_on_exit(
                         (closed.entry.ce_level if closed.entry.side is TradeSide.CE
@@ -261,6 +273,11 @@ class LivePaperTradingEngine:
                             exit_premium=closed.exit.exit_price,
                             exit_reason=closed.exit.reason.value,
                             running_pnl_rupees=pnl_rupees,
+                            competitor_ladder=closed.exit.competitor_ladder,
+                            competitor_strike=closed.exit.competitor_strike,
+                            competitor_trigger_level=closed.exit.competitor_trigger_level,
+                            competitor_trigger_price=closed.exit.competitor_trigger_price,
+                            pricing_method=closed.exit.pricing_method,
                         )
                         self._current_live_record = None
                     logger.info(
@@ -354,14 +371,21 @@ def export_end_of_day_excel(engine: LivePaperTradingEngine, path: Union[str, Pat
 
     trade_log = wb.active
     trade_log.title = "Trade Log"
-    trade_log.append(["Strike", "Side", "Entry Time", "Entry Premium", "Target", "Stop Loss",
-                       "Trailing Stop Loss", "Exit Time", "Exit Premium", "Exit Reason", "PnL (Rs)"])
+    trade_log.append([
+        "Strike", "Side", "Entry Time", "Entry Premium", "Target", "Stop Loss",
+        "Trailing Stop Loss", "Exit Time", "Exit Premium", "Exit Reason", "PnL (Rs)",
+        "Competitor Ladder", "Competitor Strike", "Competitor Trigger Level",
+        "Competitor Trigger Price", "Pricing Method",
+    ])
     for r in engine.trade_records:
         trade_log.append([
             r.strike, r.side.value, r.entry_time.isoformat(), r.entry_premium, r.target,
             r.stop_loss, r.trailing_stop_loss,
             r.exit_time.isoformat() if r.exit_time else "", r.exit_premium or "",
             r.exit_reason or "OPEN", r.running_pnl_rupees if r.running_pnl_rupees is not None else "",
+            r.competitor_ladder or "", r.competitor_strike or "",
+            r.competitor_trigger_level or "", r.competitor_trigger_price or "",
+            r.pricing_method or "",
         ])
 
     trades = engine.ledger.trades

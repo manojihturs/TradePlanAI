@@ -12,10 +12,13 @@ from strategy.level_capture import LevelCapture, StrikeLevels
 from strategy.premium_mapping import build_premium_mapping
 from strategy.entry_signal import Candle, EntrySignal, MappingAnchor, TradeSide
 from strategy.exit_signal import (
+    CompetitorLevel,
     ExitLevels,
     ExitReason,
     ExitSignalError,
     check_exit,
+    check_exit_with_competitor,
+    compute_competitor_exit_level,
     compute_exit_levels,
 )
 
@@ -149,6 +152,153 @@ class CheckExitTests(unittest.TestCase):
         candle = Candle(200.0, 240.0, 170.0, 230.0)
         result = check_exit(self.ts, candle, self.levels)
         self.assertEqual(result.reason, ExitReason.TARGET)
+
+
+class ComputeCompetitorExitLevelTests(unittest.TestCase):
+    """Version 1.1 - Competitor Exit threshold computation."""
+
+    def setUp(self) -> None:
+        self.mapping = _make_mapping()
+
+    def test_ce_entry_uses_same_anchor_opposite_side_ladder(self) -> None:
+        # CE entry at 24000 (TOP anchor): competitor ladder is TOP_PE
+        # (ce_high). entry.pe_level=238.75 sits at strike 24000 in that
+        # ladder; one rung below by value is 206.35 at strike 24050.
+        entry = EntrySignal(
+            timestamp=datetime(2026, 7, 22, 10, 50), strike=24000,
+            side=TradeSide.CE, anchor=MappingAnchor.TOP,
+            ce_level=94.40, pe_level=238.75,
+        )
+        result = compute_competitor_exit_level(entry, self.mapping)
+        self.assertEqual(result, CompetitorLevel(ladder_name="TOP_PE", source_strike=24050, trigger_level=206.35))
+
+    def test_pe_entry_uses_same_anchor_opposite_side_ladder(self) -> None:
+        # PE entry at 24050 (TOP anchor): competitor ladder is TOP_CE
+        # (pe_low). entry.ce_level=114.00 sits at strike 24050 in that
+        # ladder; one rung below by value is 94.40 at strike 24000.
+        entry = EntrySignal(
+            timestamp=datetime(2026, 7, 22, 9, 25), strike=24050,
+            side=TradeSide.PE, anchor=MappingAnchor.TOP,
+            ce_level=114.00, pe_level=206.35,
+        )
+        result = compute_competitor_exit_level(entry, self.mapping)
+        self.assertEqual(result, CompetitorLevel(ladder_name="TOP_CE", source_strike=24000, trigger_level=94.40))
+
+    def test_no_lower_rung_returns_none(self) -> None:
+        # 24300's ce_high (92.50) is the lowest value in the TOP_PE
+        # ladder - no lower rung exists, so Competitor Exit does not
+        # apply to this trade (not an error).
+        entry = EntrySignal(
+            timestamp=datetime(2026, 7, 22, 9, 25), strike=24300,
+            side=TradeSide.CE, anchor=MappingAnchor.TOP,
+            ce_level=245.05, pe_level=92.50,
+        )
+        self.assertIsNone(compute_competitor_exit_level(entry, self.mapping))
+
+
+class CheckExitWithCompetitorTests(unittest.TestCase):
+    """Version 1.1 - Competitor Exit priority validation.
+
+    Uses the CE@24000 TOP-anchor entry from ComputeExitLevelsTests
+    (target=114.00, stop_loss=78.20) with its computed Competitor Exit
+    threshold (trigger_level=206.35, from TOP_PE ladder, source_strike=24050).
+    """
+
+    def setUp(self) -> None:
+        self.levels = ExitLevels(target=114.00, stop_loss=78.20)
+        self.competitor = CompetitorLevel(ladder_name="TOP_PE", source_strike=24050, trigger_level=206.35)
+        self.ts = datetime(2026, 7, 22, 9, 45)
+
+    def test_competitor_exit_before_target(self) -> None:
+        # Own candle would hit Target; competitor candle also touches
+        # its trigger level - Competitor Exit must win.
+        own_candle = Candle(100.0, 120.0, 95.0, 115.0)   # high 120 >= target 114.00
+        competitor_candle = Candle(210.0, 212.0, 200.0, 205.0)  # low 200 <= 206.35
+        result = check_exit_with_competitor(self.ts, own_candle, competitor_candle, self.levels, self.competitor)
+        self.assertEqual(result.reason, ExitReason.COMPETITOR_EXIT)
+
+    def test_competitor_exit_before_stop_loss(self) -> None:
+        # Own candle would hit Stop Loss; competitor candle also
+        # touches its trigger level - Competitor Exit must win.
+        own_candle = Candle(90.0, 92.0, 75.0, 80.0)   # low 75 <= stop 78.20
+        competitor_candle = Candle(210.0, 212.0, 200.0, 205.0)  # low 200 <= 206.35
+        result = check_exit_with_competitor(self.ts, own_candle, competitor_candle, self.levels, self.competitor)
+        self.assertEqual(result.reason, ExitReason.COMPETITOR_EXIT)
+
+    def test_target_without_competitor_trigger(self) -> None:
+        own_candle = Candle(100.0, 120.0, 95.0, 115.0)   # high 120 >= target 114.00
+        competitor_candle = Candle(230.0, 235.0, 220.0, 225.0)  # low 220 > 206.35 - no trigger
+        result = check_exit_with_competitor(self.ts, own_candle, competitor_candle, self.levels, self.competitor)
+        self.assertEqual(result.reason, ExitReason.TARGET)
+        self.assertEqual(result.exit_price, 114.00)
+
+    def test_stop_loss_without_competitor_trigger(self) -> None:
+        own_candle = Candle(90.0, 92.0, 75.0, 80.0)   # low 75 <= stop 78.20
+        competitor_candle = Candle(230.0, 235.0, 220.0, 225.0)  # low 220 > 206.35 - no trigger
+        result = check_exit_with_competitor(self.ts, own_candle, competitor_candle, self.levels, self.competitor)
+        self.assertEqual(result.reason, ExitReason.STOP_LOSS)
+        self.assertEqual(result.exit_price, 78.20)
+
+    def test_simultaneous_competitor_and_target_prefers_competitor(self) -> None:
+        # A wide-range own candle spans both Target and Stop Loss, and
+        # the competitor also triggers - Competitor Exit still wins
+        # over Target even when Target would itself have won the
+        # own-side-only tie-break.
+        own_candle = Candle(100.0, 130.0, 70.0, 100.0)  # covers both target and stop
+        competitor_candle = Candle(210.0, 212.0, 200.0, 205.0)
+        result = check_exit_with_competitor(self.ts, own_candle, competitor_candle, self.levels, self.competitor)
+        self.assertEqual(result.reason, ExitReason.COMPETITOR_EXIT)
+
+    def test_simultaneous_competitor_and_stop_prefers_competitor(self) -> None:
+        own_candle = Candle(90.0, 92.0, 75.0, 80.0)  # only stop reachable
+        competitor_candle = Candle(210.0, 212.0, 200.0, 205.0)
+        result = check_exit_with_competitor(self.ts, own_candle, competitor_candle, self.levels, self.competitor)
+        self.assertEqual(result.reason, ExitReason.COMPETITOR_EXIT)
+
+    def test_no_competitor_candle_falls_back_to_target_stop_only(self) -> None:
+        own_candle = Candle(100.0, 120.0, 95.0, 115.0)
+        result = check_exit_with_competitor(self.ts, own_candle, None, self.levels, self.competitor)
+        self.assertEqual(result.reason, ExitReason.TARGET)
+
+    def test_no_competitor_level_falls_back_to_target_stop_only(self) -> None:
+        own_candle = Candle(100.0, 120.0, 95.0, 115.0)
+        competitor_candle = Candle(210.0, 212.0, 200.0, 205.0)
+        result = check_exit_with_competitor(self.ts, own_candle, competitor_candle, self.levels, None)
+        self.assertEqual(result.reason, ExitReason.TARGET)
+
+    def test_competitor_exit_price_is_own_candle_open_not_close(self) -> None:
+        own_candle = Candle(101.5, 120.0, 95.0, 115.0)  # open=101.5, close=115.0
+        competitor_candle = Candle(210.0, 212.0, 200.0, 205.0)
+        result = check_exit_with_competitor(self.ts, own_candle, competitor_candle, self.levels, self.competitor)
+        self.assertEqual(result.exit_price, 101.5)
+        self.assertEqual(result.pricing_method, "CANDLE_APPROXIMATION")
+
+    def test_competitor_exit_records_all_required_fields(self) -> None:
+        own_candle = Candle(101.5, 120.0, 95.0, 115.0)
+        competitor_candle = Candle(210.0, 212.0, 200.0, 203.5)  # low=200.0 <= 206.35
+        result = check_exit_with_competitor(self.ts, own_candle, competitor_candle, self.levels, self.competitor)
+        self.assertEqual(result.competitor_ladder, "TOP_PE")
+        self.assertEqual(result.competitor_strike, 24050)
+        self.assertEqual(result.competitor_trigger_level, 206.35)
+        self.assertEqual(result.competitor_trigger_price, 200.0)
+        self.assertEqual(result.pricing_method, "CANDLE_APPROXIMATION")
+
+    def test_no_exit_at_all_returns_none(self) -> None:
+        own_candle = Candle(100.0, 105.0, 95.0, 100.0)
+        competitor_candle = Candle(230.0, 235.0, 220.0, 225.0)
+        result = check_exit_with_competitor(self.ts, own_candle, competitor_candle, self.levels, self.competitor)
+        self.assertIsNone(result)
+
+    def test_pre_1_1_check_exit_is_unchanged(self) -> None:
+        # check_exit() itself (Target/Stop Loss only, no Competitor
+        # Exit awareness) must still behave exactly as before Version
+        # 1.1 - existing callers that never pass competitor data are
+        # unaffected.
+        own_candle = Candle(230.0, 240.0, 225.0, 238.75)
+        levels = ExitLevels(target=238.75, stop_loss=176.85)
+        result = check_exit(self.ts, own_candle, levels)
+        self.assertEqual(result.reason, ExitReason.TARGET)
+        self.assertIsNone(result.competitor_ladder)
 
 
 if __name__ == "__main__":

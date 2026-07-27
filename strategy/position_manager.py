@@ -6,15 +6,18 @@ itself - it does not detect entries and does not decide exits. It only:
 
     1. Accepts an already-confirmed ``EntrySignal`` (Module 3 output)
        and opens a position, delegating Target/Stop Loss computation
-       to ``exit_signal.compute_exit_levels`` (Module 4).
-    2. While a position is open, feeds each new candle to
-       ``exit_signal.check_exit`` (Module 4) and closes the position
-       if it fires.
+       to ``exit_signal.compute_exit_levels`` and (Version 1.1)
+       Competitor Exit threshold computation to
+       ``exit_signal.compute_competitor_exit_level`` (Module 4).
+    2. While a position is open, feeds each new candle (and, as of
+       Version 1.1, the competitor contract's candle) to
+       ``exit_signal.check_exit_with_competitor`` (Module 4) and closes
+       the position if it fires.
     3. Refuses to open a second position while one is already open,
        and refuses to process an exit candle while flat.
 
-Neither ``entry_signal.py`` nor ``exit_signal.py`` is modified by, or
-needs to change for, this module.
+``entry_signal.py`` is not modified by, or needed to change for, this
+module (Version 1.1 explicitly does not touch the entry engine).
 """
 
 from __future__ import annotations
@@ -26,7 +29,14 @@ from enum import Enum
 from typing import Optional
 
 from strategy.entry_signal import Candle, EntrySignal
-from strategy.exit_signal import ExitLevels, ExitSignal, check_exit, compute_exit_levels
+from strategy.exit_signal import (
+    CompetitorLevel,
+    ExitLevels,
+    ExitSignal,
+    check_exit_with_competitor,
+    compute_competitor_exit_level,
+    compute_exit_levels,
+)
 from strategy.premium_mapping import PremiumMapping
 
 logger = logging.getLogger(__name__)
@@ -57,10 +67,16 @@ class Position:
         entry: The ``EntrySignal`` (Module 3) that opened this position.
         exit_levels: The ``ExitLevels`` (Module 4) - Target and Mapped
             Stop Loss - this position exits on.
+        competitor_level: (Version 1.1) The ``CompetitorLevel``
+            threshold this position also exits on, at higher priority
+            than Target/Stop Loss - ``None`` if Competitor Exit does
+            not apply to this trade (see
+            ``exit_signal.compute_competitor_exit_level``).
     """
 
     entry: EntrySignal
     exit_levels: ExitLevels
+    competitor_level: Optional[CompetitorLevel] = None
 
 
 @dataclass(frozen=True)
@@ -136,26 +152,37 @@ class PositionManager:
                 f"{self._position.entry.strike})"
             )
         exit_levels = compute_exit_levels(entry, mapping)
-        self._position = Position(entry=entry, exit_levels=exit_levels)
+        competitor_level = compute_competitor_exit_level(entry, mapping)
+        self._position = Position(entry=entry, exit_levels=exit_levels, competitor_level=competitor_level)
         logger.info(
-            "Position OPENED: %s at strike %d (%s anchor), target=%.2f stop_loss=%.2f",
+            "Position OPENED: %s at strike %d (%s anchor), target=%.2f stop_loss=%.2f "
+            "competitor_exit=%s",
             entry.side.value, entry.strike, entry.anchor.value,
             exit_levels.target, exit_levels.stop_loss,
+            f"{competitor_level.trigger_level:.2f} ({competitor_level.ladder_name})"
+            if competitor_level else "n/a",
         )
         return self._position
 
-    def process_candle(self, timestamp: datetime, candle: Candle) -> Optional[ClosedTrade]:
-        """Check the open position's exit levels against one candle.
+    def process_candle(
+        self, timestamp: datetime, candle: Candle, competitor_candle: Optional[Candle] = None,
+    ) -> Optional[ClosedTrade]:
+        """Check the open position's exit conditions against one candle.
 
         Args:
             timestamp: The timestamp of this (already-closed) candle.
             candle: The traded contract's own OHLC candle for this timestamp.
+            competitor_candle: (Version 1.1) The competitor contract's
+                (same strike, opposite side) OHLC candle for this
+                timestamp, if available. Defaults to ``None``, which
+                preserves the exact pre-1.1 behavior (Target/Stop Loss
+                only) for any caller that does not pass it.
 
         Returns:
             A ``ClosedTrade`` if this candle closed the position
-            (Target or Stop Loss hit), else ``None`` - no exit is the
-            normal case for most candles, not an error. Always
-            ``None`` while flat.
+            (Competitor Exit, Target, or Stop Loss hit, in that
+            priority order), else ``None`` - no exit is the normal case
+            for most candles, not an error. Always ``None`` while flat.
 
         Raises:
             PositionManagerError: never raised for being flat - calling
@@ -166,7 +193,10 @@ class PositionManager:
         if self.is_flat:
             return None
 
-        exit_signal = check_exit(timestamp, candle, self._position.exit_levels)
+        exit_signal = check_exit_with_competitor(
+            timestamp, candle, competitor_candle,
+            self._position.exit_levels, self._position.competitor_level,
+        )
         if exit_signal is None:
             return None
 

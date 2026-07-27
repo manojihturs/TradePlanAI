@@ -21,7 +21,12 @@ _RAW = {
     24350: (76.00, 53.65, 352.35, 280.00), 24400: (59.75, 43.05, 391.65, 320.35),
     24450: (49.60, 34.20, 433.20, 357.55),
 }
-_CE_SAFE = Candle(90.0, 95.0, 85.0, 90.0)
+#: low=100.5 is deliberately between the Version 1.1 Competitor Exit
+#: threshold for a strike-24050 TOP PE entry (94.40 - see
+#: strategy.exit_signal.compute_competitor_exit_level) and the entry
+#: condition's own ce_level (114.00), so tests using this fixture keep
+#: exercising Target/Stop Loss without an incidental Competitor Exit.
+_CE_SAFE = Candle(102.0, 103.0, 100.5, 102.0)
 _PE_SAFE = Candle(150.0, 155.0, 145.0, 150.0)
 
 
@@ -96,6 +101,36 @@ class LivePaperTradingEngineTests(unittest.TestCase):
         self.assertAlmostEqual(record.entry_premium, 206.35)
         self.assertAlmostEqual(record.exit_premium, 238.75)
         self.assertGreater(self.engine.capital.running_pnl, 0)
+
+    def test_competitor_exit_wired_through_on_candle_close(self):
+        # Version 1.1: same PE@24050 TOP-anchor entry as the lifecycle
+        # test above. Its Competitor Exit threshold is TOP_CE ladder,
+        # source_strike=24000, trigger_level=94.40 (pe_low one rung
+        # below the entry's own ce_level=114.00).
+        strike = 24050
+        self.engine.on_candle_close(datetime(2026, 7, 27, 9, 20),
+                                     {strike: _CE_SAFE}, {strike: _PE_SAFE})
+        self.engine.on_candle_close(datetime(2026, 7, 27, 9, 25),
+                                     {strike: _CE_SAFE}, {strike: Candle(200.0, 220.0, 200.0, 217.2)})
+        self.assertTrue(self.engine.manager.is_open)
+
+        # 09:30: own PE candle would ALSO hit Target (238.75), but the
+        # competitor CE candle's low (90.0) breaches the 94.40 trigger
+        # first - Competitor Exit must take priority.
+        competitor_trigger_candle = Candle(95.0, 96.0, 90.0, 92.0)
+        own_would_hit_target = Candle(233.0, 240.0, 230.0, 236.0)
+        self.engine.on_candle_close(datetime(2026, 7, 27, 9, 30),
+                                     {strike: competitor_trigger_candle}, {strike: own_would_hit_target})
+
+        self.assertTrue(self.engine.manager.is_flat)
+        record = self.engine.trade_records[0]
+        self.assertEqual(record.exit_reason, "COMPETITOR_EXIT")
+        self.assertEqual(record.exit_premium, 233.0)  # own candle's OPEN, not close/target
+        self.assertEqual(record.competitor_ladder, "TOP_CE")
+        self.assertEqual(record.competitor_strike, 24000)
+        self.assertEqual(record.competitor_trigger_level, 94.40)
+        self.assertEqual(record.competitor_trigger_price, 90.0)
+        self.assertEqual(record.pricing_method, "CANDLE_APPROXIMATION")
 
     def test_dashboard_snapshot_reflects_state(self):
         snap = self.engine.dashboard_snapshot(datetime(2026, 7, 27, 9, 20), 24150.0)
