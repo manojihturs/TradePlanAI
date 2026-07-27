@@ -117,15 +117,11 @@ def is_competitor_exit_enabled():
 API_BASE = "https://api.upstox.com"
 INSTRUMENT_MASTER_URL = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
 
-TELEGRAM_BOT_TOKEN = os.environ.get("ORB_TG_TOKEN", "")
-TELEGRAM_CHAT_ID   = os.environ.get("ORB_TG_CHAT", "")
-
-def require_telegram_config():
-    """Telegram alerts are mandatory for live/auto running - fail fast if unset."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        raise RuntimeError(
-            "ORB_TG_TOKEN and ORB_TG_CHAT must both be set - Telegram notification "
-            "is required before running live or auto mode.")
+# Telegram sending itself now lives in notifications.py (shared with the
+# strategy/ package's glue scripts) - kept re-exported here under their
+# original names so existing callers (orb_auto.py, orb_ui.py, etc.) are
+# unaffected.
+from notifications import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, require_telegram_config, send_telegram_message
 
 _logger = None
 
@@ -394,9 +390,4 @@ def alert(msg):
     print("[%s] %s" % (stamp, tagged), flush=True)
     if _logger is not None:
         _logger.info(tagged)
-    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        try:
-            requests.post("https://api.telegram.org/bot%s/sendMessage" % TELEGRAM_BOT_TOKEN,
-                          json={"chat_id": TELEGRAM_CHAT_ID, "text": tagged}, timeout=10)
-        except Exception as e:
-            print("  (telegram failed: %s)" % e)
+    send_telegram_message(tagged)
