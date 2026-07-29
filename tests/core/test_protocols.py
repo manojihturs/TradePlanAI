@@ -49,3 +49,21 @@ def test_clock_and_id_factory_type_aliases_are_usable() -> None:
 
     assert isinstance(clock(), datetime)
     assert isinstance(id_factory(), uuid.UUID)
+
+
+class TestUtcNow:
+    def test_returns_a_datetime(self) -> None:
+        from core.protocols import utc_now
+
+        assert isinstance(utc_now(), datetime)
+
+    def test_result_is_timezone_aware(self) -> None:
+        from core.protocols import utc_now
+
+        assert utc_now().tzinfo is not None
+
+    def test_satisfies_the_clock_type(self) -> None:
+        from core.protocols import Clock, utc_now
+
+        clock: Clock = utc_now
+        assert clock().tzinfo is not None

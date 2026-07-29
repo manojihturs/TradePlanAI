@@ -23,10 +23,9 @@ Future/Strike Selection" boundary.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
 
 from core.events import WinnerDetectedEvent
-from core.protocols import Clock, EventBusProtocol, IdFactory
+from core.protocols import Clock, EventBusProtocol, IdFactory, utc_now
 from models.reference_level import ReferenceLevel
 from models.trade_signal import TradeSignal
 from position_manager.position_manager import PositionManager
@@ -55,7 +54,7 @@ class EntryEngine:
         self._bus = bus
         self._position_manager = position_manager
         self._reference_levels = reference_levels
-        self._clock: Clock = clock if clock is not None else datetime.now
+        self._clock: Clock = clock if clock is not None else utc_now
         self._id_factory: IdFactory = id_factory if id_factory is not None else uuid.uuid4
         self._bus.subscribe(WinnerDetectedEvent, self._on_winner_detected)  # type: ignore[arg-type]
 

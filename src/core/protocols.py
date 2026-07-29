@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
 from core.events import Event
@@ -26,13 +26,33 @@ from core.events import Event
 #: since the bus itself is not generic on any single event class.
 EventHandler = Callable[[Event], None]
 
-#: Injectable wall-clock source - matches this repository's
-#: established ``clock: Callable[[], datetime] = datetime.now``
-#: pattern used throughout ``trading_engine``.
+#: Injectable wall-clock source.
 Clock = Callable[[], datetime]
 
 #: Injectable UUID source, for deterministic testing.
 IdFactory = Callable[[], uuid.UUID]
+
+
+def utc_now() -> datetime:
+    """The default :data:`Clock` implementation for every class in
+    this codebase that accepts an injectable clock.
+
+    Traceability
+    ------------
+    ``ARCHITECTURE_REVIEW.md`` Finding 1 (High): several classes
+    previously defaulted their uninjected clock to the bare
+    ``datetime.now`` builtin, which returns a *naive* (timezone-less)
+    datetime. Every timestamp elsewhere in this codebase - every test
+    fixture, and any real market-data feed - is timezone-aware, so an
+    uninjected default clock would eventually be subtracted from or
+    compared against an aware datetime and raise ``TypeError: can't
+    subtract offset-naive and offset-aware datetimes``. This already
+    happened once, during Sprint 3 development, and was fixed only in
+    the affected test fixture, not at the source. This function is
+    the single, shared, timezone-aware default every class should use
+    instead of calling ``datetime.now`` directly.
+    """
+    return datetime.now(UTC)
 
 
 @runtime_checkable

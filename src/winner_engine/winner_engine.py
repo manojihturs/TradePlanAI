@@ -36,7 +36,7 @@ from decimal import Decimal
 from core.enums import TradeDirection
 from core.events import WinnerDetectedEvent
 from core.exceptions import AmbiguousWinnerError, ValidationError
-from core.protocols import Clock, EventBusProtocol, IdFactory
+from core.protocols import Clock, EventBusProtocol, IdFactory, utc_now
 from models.market_snapshot import MarketSnapshot
 from models.reference_level import ReferenceLevel
 
@@ -57,7 +57,7 @@ class WinnerEngine:
         id_factory: IdFactory | None = None,
     ) -> None:
         self._bus = bus
-        self._clock: Clock = clock if clock is not None else datetime.now
+        self._clock: Clock = clock if clock is not None else utc_now
         self._id_factory: IdFactory = id_factory if id_factory is not None else uuid.uuid4
 
     def evaluate(

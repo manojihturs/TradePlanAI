@@ -18,12 +18,11 @@ enforces the one-trade-at-a-time gate around it.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
 
 from core.enums import ExitReason
 from core.events import TradeClosedEvent, TradeOpenedEvent
 from core.exceptions import TradeManagerError, ValidationError
-from core.protocols import Clock, EventBusProtocol, IdFactory
+from core.protocols import Clock, EventBusProtocol, IdFactory, utc_now
 from models.trade_position import TradePosition
 
 
@@ -44,7 +43,7 @@ class TradeManager:
     ) -> None:
         self._active: TradePosition | None = None
         self._bus = bus
-        self._clock: Clock = clock if clock is not None else datetime.now
+        self._clock: Clock = clock if clock is not None else utc_now
         self._id_factory: IdFactory = id_factory if id_factory is not None else uuid.uuid4
 
     def active_position(self) -> TradePosition | None:

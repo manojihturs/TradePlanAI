@@ -16,11 +16,10 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterable, Iterator
-from datetime import datetime
 
 from core.events import MarketCloseEvent, MarketOpenEvent
 from core.exceptions import ReplayError
-from core.protocols import Clock, EventBusProtocol, IdFactory
+from core.protocols import Clock, EventBusProtocol, IdFactory, utc_now
 from models.market_snapshot import MarketSnapshot
 
 
@@ -42,7 +41,7 @@ class ReplayEngine:
         id_factory: IdFactory | None = None,
     ) -> None:
         self._bus = bus
-        self._clock: Clock = clock if clock is not None else datetime.now
+        self._clock: Clock = clock if clock is not None else utc_now
         self._id_factory: IdFactory = id_factory if id_factory is not None else uuid.uuid4
 
     def run(
