@@ -54,3 +54,13 @@ class EventBusProtocol(Protocol):
         """Remove a previously-registered ``handler`` for
         ``event_type``."""
         ...  # pragma: no cover
+
+    def subscribe_all(self, handler: EventHandler) -> None:
+        """Register ``handler`` to be called for every future event,
+        regardless of concrete type. Added in Sprint 3 for
+        ``event_recorder.event_recorder.EventRecorder``."""
+        ...  # pragma: no cover
+
+    def unsubscribe_all(self, handler: EventHandler) -> None:
+        """Remove a previously-registered wildcard ``handler``."""
+        ...  # pragma: no cover

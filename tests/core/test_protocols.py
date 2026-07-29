@@ -22,6 +22,12 @@ class _FakeBus:
     def unsubscribe(self, event_type: type, handler: object) -> None:
         return None
 
+    def subscribe_all(self, handler: object) -> None:
+        return None
+
+    def unsubscribe_all(self, handler: object) -> None:
+        return None
+
 
 def test_fake_bus_satisfies_event_bus_protocol() -> None:
     bus = _FakeBus()

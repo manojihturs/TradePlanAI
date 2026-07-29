@@ -113,3 +113,54 @@ class TestHandlerCount:
     def test_reflects_subscriptions(self, bus: EventBus) -> None:
         bus.subscribe(MarketOpenEvent, lambda _: None)  # type: ignore[arg-type]
         assert bus.handler_count(MarketOpenEvent) == 1
+
+
+class TestSubscribeAll:
+    def test_wildcard_handler_receives_every_event_type(
+        self, bus: EventBus, open_event: MarketOpenEvent
+    ) -> None:
+        received: list[object] = []
+        bus.subscribe_all(received.append)  # type: ignore[arg-type]
+
+        close_event = MarketCloseEvent(
+            uuid.uuid4(), datetime(2026, 7, 30, 15, 30, 0, tzinfo=UTC), uuid.uuid4()
+        )
+        bus.publish(open_event)
+        bus.publish(close_event)
+
+        assert received == [open_event, close_event]
+
+    def test_wildcard_handlers_run_after_type_specific_handlers(
+        self, bus: EventBus, open_event: MarketOpenEvent
+    ) -> None:
+        order: list[str] = []
+        bus.subscribe(MarketOpenEvent, lambda _: order.append("specific"))  # type: ignore[arg-type]
+        bus.subscribe_all(lambda _: order.append("wildcard"))  # type: ignore[arg-type]
+
+        bus.publish(open_event)
+
+        assert order == ["specific", "wildcard"]
+
+    def test_unsubscribe_all_removes_handler(
+        self, bus: EventBus, open_event: MarketOpenEvent
+    ) -> None:
+        received: list[object] = []
+        bus.subscribe_all(received.append)  # type: ignore[arg-type]
+        bus.unsubscribe_all(received.append)  # type: ignore[arg-type]
+
+        bus.publish(open_event)
+
+        assert received == []
+
+    def test_unsubscribe_all_unregistered_handler_raises(self, bus: EventBus) -> None:
+        with pytest.raises(EventBusError, match="was never subscribed to all events"):
+            bus.unsubscribe_all(lambda _: None)  # type: ignore[arg-type]
+
+
+class TestGlobalHandlerCount:
+    def test_zero_when_none_registered(self, bus: EventBus) -> None:
+        assert bus.global_handler_count() == 0
+
+    def test_reflects_subscriptions(self, bus: EventBus) -> None:
+        bus.subscribe_all(lambda _: None)  # type: ignore[arg-type]
+        assert bus.global_handler_count() == 1

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from core.exceptions import (
+    AmbiguousWinnerError,
     EventBusError,
     ReplayError,
     StateMachineError,
@@ -24,6 +25,7 @@ from core.exceptions import (
         StateMachineError,
         ReplayError,
         UnresolvedBusinessRuleError,
+        AmbiguousWinnerError,
     ],
 )
 def test_every_subclass_is_a_strategy_engine_error(exception_type: type[Exception]) -> None:

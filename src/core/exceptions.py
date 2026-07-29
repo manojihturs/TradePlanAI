@@ -42,6 +42,19 @@ class ReplayError(StrategyEngineError):
     data source."""
 
 
+class AmbiguousWinnerError(StrategyEngineError):
+    """Raised if a Winner evaluation ever finds both CE and PE
+    genuinely touching their own reference levels on the same candle.
+
+    Specification Rule 3 (v1.1) states this scenario "does not
+    occur" and explicitly instructs against inventing tie-break
+    logic. Rather than guess a winner, this exception makes the
+    supposedly-impossible case fail loudly instead of silently -
+    matching ``research/architecture/TEST_STRATEGY.md`` Section 2.7's
+    own "asserted absent" testing convention for this exact case.
+    """
+
+
 class UnresolvedBusinessRuleError(StrategyEngineError):
     """Raised by any interface/abstract method whose underlying
     business rule is still MISSING INFORMATION per
