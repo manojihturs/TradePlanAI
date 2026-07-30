@@ -20,3 +20,5 @@ watchdog.log
 backtest_summary.xlsx
 live_paper_trading_*.xlsx
 real_backtest_*.xlsx
+regression_report.csv
+regression_output/
