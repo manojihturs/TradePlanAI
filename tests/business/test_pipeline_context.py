@@ -30,6 +30,7 @@ class TestConstruction:
         context = _context()
 
         assert context.reference_data == ()
+        assert context.reference_strike is None
         assert context.weekly_future is None
         assert context.selected_strike is None
         assert context.tp_state is None
@@ -72,6 +73,11 @@ class TestWithMethods:
         context = _context().with_reference_data((level,))
 
         assert context.reference_data == (level,)
+
+    def test_with_reference_strike(self) -> None:
+        context = _context().with_reference_strike(Decimal(24200))
+
+        assert context.reference_strike == Decimal(24200)
 
     def test_with_weekly_future(self) -> None:
         weekly_future = WeeklyFuture(

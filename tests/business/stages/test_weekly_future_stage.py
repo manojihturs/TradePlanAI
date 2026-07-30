@@ -91,6 +91,7 @@ class TestRun:
 
         outcome = stage.run(_context(_reference_data()), execution)
 
+        assert outcome.context.reference_strike == _ANCHOR_STRIKE
         assert outcome.context.weekly_future is not None
         assert outcome.context.weekly_future.high == _EXPECTED_HIGH
         assert outcome.context.weekly_future.low == _EXPECTED_LOW

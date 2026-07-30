@@ -20,6 +20,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from decimal import Decimal
 
 from core.events import WinnerDetectedEvent
 from core.exceptions import ValidationError
@@ -41,6 +42,11 @@ class PipelineContext:
         session_id: The trading session this run concerns.
         candle_timestamp: The candle currently being processed.
         reference_data: The 13-level reference ladder, once built.
+        reference_strike: The anchor strike
+            (``business.stages.weekly_future_stage.WeeklyFutureStage``'s
+            constructor-injected ``anchor_strike``) that
+            ``weekly_future``/``selected_strike`` were computed
+            against, once that stage has run.
         weekly_future: Weekly Future High/Low, once calculated.
         selected_strike: Top/Bottom Strike selection, once made.
         tp_state: TP Engine's output. Typed ``object`` - see module
@@ -55,6 +61,7 @@ class PipelineContext:
     session_id: uuid.UUID
     candle_timestamp: datetime
     reference_data: tuple[ReferenceLevel, ...] = field(default_factory=tuple)
+    reference_strike: Decimal | None = None
     weekly_future: WeeklyFuture | None = None
     selected_strike: StrikeSelection | None = None
     tp_state: object | None = None
@@ -77,6 +84,9 @@ class PipelineContext:
 
     def with_reference_data(self, reference_data: tuple[ReferenceLevel, ...]) -> PipelineContext:
         return replace(self, reference_data=reference_data)
+
+    def with_reference_strike(self, reference_strike: Decimal) -> PipelineContext:
+        return replace(self, reference_strike=reference_strike)
 
     def with_weekly_future(self, weekly_future: WeeklyFuture) -> PipelineContext:
         return replace(self, weekly_future=weekly_future)

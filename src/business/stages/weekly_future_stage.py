@@ -87,7 +87,11 @@ class WeeklyFutureStage:
         strike_selection = self._strike_selector.select(
             context.session_id, weekly_future, context.candle_timestamp
         )
-        updated = context.with_weekly_future(weekly_future).with_selected_strike(strike_selection)
+        updated = (
+            context.with_reference_strike(self._anchor_strike)
+            .with_weekly_future(weekly_future)
+            .with_selected_strike(strike_selection)
+        )
         return StageOutcome(context=updated)
 
     def _find_level(self, reference_data: tuple[ReferenceLevel, ...]) -> ReferenceLevel:
