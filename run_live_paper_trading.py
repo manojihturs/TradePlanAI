@@ -59,13 +59,12 @@ def main() -> None:
         expiry = date.fromisoformat(row[0])
     else:
         # No pre-existing capture row for today yet - resolve nearest weekly
-        # expiry the same way orb_auto.py's live path does, via the ATM
-        # option chain resolution already used elsewhere in this project.
-        from datetime import timedelta
-        d = session_date
-        while d.weekday() != 3:  # Thursday, NSE weekly expiry convention
-            d += timedelta(days=1)
-        expiry = d
+        # expiry via the instrument master itself (orb_common.get_nearest_expiry),
+        # the same correct logic orb_auto.py's live path already uses. The
+        # earlier "assume Thursday" guess was wrong (it picked a date with no
+        # 23650 strike listed) - this reads real expiry dates from the master
+        # instead of assuming a weekday.
+        expiry = oc.get_nearest_expiry(session_date)
     logger.info("Using expiry %s", expiry)
 
     def fetch_first_candle(strike: int, side: str):
