@@ -48,6 +48,19 @@ Logging (Sprint: "Logging", Delivery Mode): logs "ReferenceBuilder
 completed" at ``INFO`` once the ladder is built, via the standard
 library :mod:`logging` module - matching this repository's existing
 convention, not a new abstraction.
+
+Candle accumulation (Phase 2, Sprint: "ORB Pipeline Integration"):
+each candle from ``dataset.snapshots`` is appended to a running list
+and threaded into ``PipelineContext.candles`` via
+:meth:`~business.pipeline_context.PipelineContext.with_candles`
+*before* that candle's own pipeline run - so ``business.stages.orb_stage.ORBStage``
+(or any future stage) sees every candle from session start through
+the current one. This is a distinct data source from
+``reference_data``/``reference_inputs`` (which come from
+``ReferenceBuilder``, itself built from separately-supplied
+first-candle data, not from ``dataset.snapshots`` at all) - see
+``ORBStage``'s own docstring for why that separation means no
+candle-slicing is needed when passing this list to ``ORBEngine``.
 """
 
 from __future__ import annotations
@@ -64,6 +77,7 @@ from business.pipeline_context import PipelineContext
 from core.protocols import Clock, IdFactory, utc_now
 from data.historical_dataset import HistoricalDataset
 from event_recorder.event_recorder import EventRecorder
+from models.market_snapshot import MarketSnapshot
 from models.reference_level import ReferenceLevel
 from reference_builder.reference_builder import ReferenceBuilder
 from reference_builder.reference_validator import StrikeCandleInput
@@ -133,16 +147,19 @@ class ReplayRunner:
             logger.info("ReferenceBuilder completed: %d levels built", len(reference_data))
 
         business_results: list[BusinessResult] = []
+        seen_candles: list[MarketSnapshot] = []
         candles_processed = 0
         succeeded = 0
         failed = 0
 
         for candle in self._replay_engine.run(session_id, dataset.snapshots):
             candles_processed += 1
+            seen_candles.append(candle)
             context = PipelineContext(
                 session_id=session_id,
                 candle_timestamp=candle.timestamp,
                 reference_data=reference_data,
+                candles=tuple(seen_candles),
             )
             result = self._orchestrator.run(context)
             business_results.append(result)

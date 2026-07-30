@@ -15,10 +15,13 @@ from business.business_errors import StageExecutionError
 from business.business_pipeline import StageOutcome
 from business.execution_context import ExecutionContext
 from business.pipeline_context import PipelineContext
+from business.stages.orb_stage import ORBStage
 from business.stages.weekly_future_stage import WeeklyFutureStage
+from core.enums import OptionType, ORBStatus
 from core.exceptions import ApplicationError, EventBusError, ValidationError
 from events.event_bus import EventBus
 from models.market_snapshot import MarketSnapshot
+from orb_engine.orb_engine import ORBEngine
 from reference_builder.reference_validator import StrikeCandleInput
 from strike_selector.strike_selector import StrikeSelector
 from weekly_future.weekly_future_calculator import WeeklyFutureCalculator
@@ -487,3 +490,45 @@ class TestLogging:
             app.run()
 
         assert "Stage weekly_future failed" in caplog.text
+
+
+class TestORBStageIntegration:
+    """Phase 2, Sprint: ORB Pipeline Integration."""
+
+    def test_orb_result_reaches_the_final_replay_result(self, tmp_path: Path) -> None:
+        anchor_strike = Decimal(24200)
+        weekly_future_stage = WeeklyFutureStage(
+            anchor_strike=anchor_strike,
+            weekly_future_calculator=WeeklyFutureCalculator(),
+            strike_selector=StrikeSelector(),
+        )
+        orb_stage = ORBStage(
+            anchor_strike=anchor_strike, side=OptionType.CALL, orb_engine=ORBEngine()
+        )
+        config = _config(tmp_path, reference_inputs=_reference_inputs())
+        app = ReplayApplication(configuration=config, stages=(weekly_future_stage, orb_stage))
+
+        result = app.run()
+
+        assert result.succeeded_count == len(result.business_results)
+        for business_result in result.business_results:
+            assert business_result.completed_stages == ("weekly_future", "orb")
+            assert business_result.context.orb_result is not None
+            assert business_result.context.orb_result.status in (
+                ORBStatus.NONE,
+                ORBStatus.BREAKOUT,
+                ORBStatus.BREAKDOWN,
+            )
+
+    def test_orb_stage_sees_accumulated_candles(self, tmp_path: Path) -> None:
+        anchor_strike = Decimal(24200)
+        orb_stage = ORBStage(
+            anchor_strike=anchor_strike, side=OptionType.CALL, orb_engine=ORBEngine()
+        )
+        config = _config(tmp_path, reference_inputs=_reference_inputs())
+        app = ReplayApplication(configuration=config, stages=(orb_stage,))
+
+        result = app.run()
+
+        candle_counts = [len(br.context.candles) for br in result.business_results]
+        assert candle_counts == list(range(1, len(result.business_results) + 1))

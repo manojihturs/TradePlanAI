@@ -9,9 +9,11 @@ from decimal import Decimal
 import pytest
 
 from business.pipeline_context import PipelineContext
-from core.enums import EventPriority, TradeDirection
+from core.enums import EventPriority, OptionType, ORBStatus, TradeDirection
 from core.events import WinnerDetectedEvent
 from core.exceptions import ValidationError
+from models.market_snapshot import MarketSnapshot
+from models.orb_result import ORBResult
 from models.reference_level import ReferenceLevel
 from models.strike import StrikeSelection
 from models.weekly_future import WeeklyFuture
@@ -33,6 +35,8 @@ class TestConstruction:
         assert context.reference_strike is None
         assert context.weekly_future is None
         assert context.selected_strike is None
+        assert context.candles == ()
+        assert context.orb_result is None
         assert context.tp_state is None
         assert context.qualification_state is None
         assert context.winner is None
@@ -103,6 +107,30 @@ class TestWithMethods:
         context = _context().with_selected_strike(selection)
 
         assert context.selected_strike is selection
+
+    def test_with_candles(self) -> None:
+        candle = MarketSnapshot(timestamp=_ts(), underlying_price=Decimal(100))
+
+        context = _context().with_candles((candle,))
+
+        assert context.candles == (candle,)
+
+    def test_with_orb_result(self) -> None:
+        orb_result = ORBResult(
+            orb_result_id=uuid.uuid4(),
+            session_id=uuid.uuid4(),
+            strike=Decimal(24200),
+            side=OptionType.CALL,
+            opening_high=Decimal(150),
+            opening_low=Decimal(100),
+            range=Decimal(50),
+            status=ORBStatus.NONE,
+            calculated_at=_ts(),
+        )
+
+        context = _context().with_orb_result(orb_result)
+
+        assert context.orb_result is orb_result
 
     def test_with_tp_state(self) -> None:
         context = _context().with_tp_state({"qualified": True})

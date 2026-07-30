@@ -24,6 +24,8 @@ from decimal import Decimal
 
 from core.events import WinnerDetectedEvent
 from core.exceptions import ValidationError
+from models.market_snapshot import MarketSnapshot
+from models.orb_result import ORBResult
 from models.reference_level import ReferenceLevel
 from models.strike import StrikeSelection
 from models.weekly_future import WeeklyFuture
@@ -49,6 +51,15 @@ class PipelineContext:
             against, once that stage has run.
         weekly_future: Weekly Future High/Low, once calculated.
         selected_strike: Top/Bottom Strike selection, once made.
+        candles: Every candle from the replay's own driver dataset
+            observed so far this session, in order (threaded in by
+            ``application.replay_runner.ReplayRunner``, accumulating
+            one candle per iteration - distinct from ``reference_data``,
+            which comes from a separate source, see
+            ``business.stages.orb_stage.ORBStage``'s own docstring).
+        orb_result: This session's Opening Range Breakout
+            classification, once ``business.stages.orb_stage.ORBStage``
+            has run.
         tp_state: TP Engine's output. Typed ``object`` - see module
             docstring.
         qualification_state: Qualification Engine's output.
@@ -64,6 +75,8 @@ class PipelineContext:
     reference_strike: Decimal | None = None
     weekly_future: WeeklyFuture | None = None
     selected_strike: StrikeSelection | None = None
+    candles: tuple[MarketSnapshot, ...] = field(default_factory=tuple)
+    orb_result: ORBResult | None = None
     tp_state: object | None = None
     qualification_state: object | None = None
     winner: WinnerDetectedEvent | None = None
@@ -93,6 +106,12 @@ class PipelineContext:
 
     def with_selected_strike(self, selected_strike: StrikeSelection) -> PipelineContext:
         return replace(self, selected_strike=selected_strike)
+
+    def with_candles(self, candles: tuple[MarketSnapshot, ...]) -> PipelineContext:
+        return replace(self, candles=candles)
+
+    def with_orb_result(self, orb_result: ORBResult) -> PipelineContext:
+        return replace(self, orb_result=orb_result)
 
     def with_tp_state(self, tp_state: object) -> PipelineContext:
         return replace(self, tp_state=tp_state)

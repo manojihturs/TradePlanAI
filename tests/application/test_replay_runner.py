@@ -368,3 +368,38 @@ class TestWeeklyFutureStageEndToEndRegression:
         assert final_context.selected_strike is not None
         assert final_context.selected_strike.top_strike == Decimal(24200)
         assert final_context.selected_strike.bottom_strike == Decimal(24150)
+
+
+class _CandlesCapturingStage:
+    def __init__(self) -> None:
+        self.observed: list[tuple[MarketSnapshot, ...]] = []
+
+    @property
+    def name(self) -> str:
+        return "candles_capturing_stage"
+
+    def is_ready(self, context: PipelineContext) -> bool:
+        return True
+
+    def run(self, context: PipelineContext, execution: ExecutionContext) -> StageOutcome:
+        self.observed.append(context.candles)
+        return StageOutcome(context=context)
+
+
+class TestCandleAccumulation:
+    def test_candles_accumulate_across_the_session(self) -> None:
+        bus = EventBus()
+        execution = ExecutionContext(mode=ExecutionMode.REPLAY, clock=lambda: _ts(0), event_bus=bus)
+        orchestrator = BusinessOrchestrator(execution)
+        stage = _CandlesCapturingStage()
+        orchestrator.register(stage)
+        replay_engine = ReplayEngine(bus=bus)
+        runner = ReplayRunner(replay_engine=replay_engine, orchestrator=orchestrator)
+
+        dataset = _dataset(1, 2, 3)
+        runner.run(dataset, _config())
+
+        assert len(stage.observed) == 3
+        assert stage.observed[0] == (dataset.snapshots[0],)
+        assert stage.observed[1] == (dataset.snapshots[0], dataset.snapshots[1])
+        assert stage.observed[2] == dataset.snapshots
