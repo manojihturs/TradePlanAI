@@ -2,4 +2,5 @@ requests
 flask
 python-dotenv
 openpyxl
+types-openpyxl
 tzdata; sys_platform == "win32"
