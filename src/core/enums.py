@@ -69,6 +69,23 @@ class ExitReason(Enum):
 
 
 @unique
+class ORBStatus(Enum):
+    """A strike/side's Opening Range Breakout classification.
+
+    A standard, industry-generic definition (price crosses above the
+    opening range's high -> ``BREAKOUT``; below its low ->
+    ``BREAKDOWN``; neither observed -> ``NONE``) - not a proprietary
+    interpretation requiring TradingView-strategy-specific evidence,
+    unlike most other enums in this module. See
+    ``orb_engine.orb_engine.ORBEngine`` for the calculation itself.
+    """
+
+    NONE = "NONE"
+    BREAKOUT = "BREAKOUT"
+    BREAKDOWN = "BREAKDOWN"
+
+
+@unique
 class EventPriority(IntEnum):
     """Dispatch-priority tiers for :class:`events.event_bus.EventBus`.
 
