@@ -11,13 +11,17 @@ import pytest
 
 from application.replay_application import ReplayApplication, ReplayApplicationConfiguration
 from application.replay_configuration import ReplayConfiguration
+from business.business_errors import StageExecutionError
 from business.business_pipeline import StageOutcome
 from business.execution_context import ExecutionContext
 from business.pipeline_context import PipelineContext
+from business.stages.weekly_future_stage import WeeklyFutureStage
 from core.exceptions import ApplicationError, EventBusError, ValidationError
 from events.event_bus import EventBus
 from models.market_snapshot import MarketSnapshot
 from reference_builder.reference_validator import StrikeCandleInput
+from strike_selector.strike_selector import StrikeSelector
+from weekly_future.weekly_future_calculator import WeeklyFutureCalculator
 
 _HEADER = "Date,Time,Open,High,Low,Close,Volume"
 
@@ -335,6 +339,61 @@ class TestReferenceBuilderIntegration:
 
     def test_reference_builder_failure_raises_application_error(self, tmp_path: Path) -> None:
         config = _config(tmp_path, reference_inputs=_reference_inputs(count=5))
+        app = ReplayApplication(configuration=config)
+
+        with pytest.raises(ApplicationError, match="Replay execution failed"):
+            app.run()
+
+
+class TestEdgeCaseStress:
+    """Sprint: Exception & Edge Case Testing. Every scenario here must
+    either return a valid ReplayResult or raise a descriptive
+    ApplicationError - never an unhandled crash."""
+
+    def test_empty_dataset_raises_descriptive_application_error(self, tmp_path: Path) -> None:
+        empty_path = tmp_path / "empty.csv"
+        empty_path.write_text(f"{_HEADER}\n", encoding="utf-8")
+        config = _config(tmp_path, dataset_path=empty_path)
+        app = ReplayApplication(configuration=config)
+
+        with pytest.raises(ApplicationError, match="Failed to load historical dataset"):
+            app.run()
+
+    def test_missing_reference_level_for_anchor_is_absorbed_not_raised(
+        self, tmp_path: Path
+    ) -> None:
+        """A full 13-strike ladder is built successfully, but none of
+        its strikes match WeeklyFutureStage's configured anchor - the
+        stage's ValidationError must be absorbed into BusinessResult,
+        not raised out of ReplayApplication.run()."""
+        stage = WeeklyFutureStage(
+            anchor_strike=Decimal(99999),  # deliberately not in the ladder
+            weekly_future_calculator=WeeklyFutureCalculator(),
+            strike_selector=StrikeSelector(),
+        )
+        config = _config(tmp_path, reference_inputs=_reference_inputs())
+        app = ReplayApplication(configuration=config, stages=(stage,))
+
+        result = app.run()
+
+        assert result.failed_count == len(result.business_results)
+        for business_result in result.business_results:
+            assert business_result.success is False
+            assert isinstance(business_result.error, StageExecutionError)
+            assert "No ReferenceLevel found for anchor strike" in str(business_result.error)
+
+    def test_duplicate_strikes_in_reference_inputs_raises_application_error(
+        self, tmp_path: Path
+    ) -> None:
+        duplicated = _reference_inputs()[:12] + (_reference_inputs()[0],)
+        config = _config(tmp_path, reference_inputs=duplicated)
+        app = ReplayApplication(configuration=config)
+
+        with pytest.raises(ApplicationError, match="Replay execution failed"):
+            app.run()
+
+    def test_incomplete_ladder_raises_application_error_not_a_crash(self, tmp_path: Path) -> None:
+        config = _config(tmp_path, reference_inputs=_reference_inputs(count=1))
         app = ReplayApplication(configuration=config)
 
         with pytest.raises(ApplicationError, match="Replay execution failed"):

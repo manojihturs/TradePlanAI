@@ -42,7 +42,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from datetime import date as date_cls
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 
 _SRC = Path(__file__).resolve().parent.parent / "src"
@@ -128,6 +128,14 @@ def _load_trading_days(conn: sqlite3.Connection) -> list[str]:
 def _load_legacy_expected(
     conn: sqlite3.Connection, session_date: str
 ) -> tuple[int, Decimal, Decimal, Decimal, Decimal] | None:
+    """Load ``orb_summary``'s legacy values for ``session_date``.
+
+    Raises:
+        ValueError: if a row exists but a value is NULL or otherwise
+            not convertible to ``Decimal`` - a descriptive error
+            rather than letting ``decimal.InvalidOperation``/
+            ``TypeError`` surface uncaught.
+    """
     cur = conn.execute(
         "SELECT atm, fut_high, fut_low, sp_high, sp_low FROM orb_summary WHERE session_date = ?",
         (session_date,),
@@ -136,18 +144,31 @@ def _load_legacy_expected(
     if row is None:
         return None
     atm, fut_high, fut_low, sp_high, sp_low = row
-    return (
-        atm,
-        Decimal(str(fut_high)),
-        Decimal(str(fut_low)),
-        Decimal(str(sp_high)),
-        Decimal(str(sp_low)),
-    )
+    try:
+        return (
+            atm,
+            Decimal(str(fut_high)),
+            Decimal(str(fut_low)),
+            Decimal(str(sp_high)),
+            Decimal(str(sp_low)),
+        )
+    except (TypeError, InvalidOperation) as exc:
+        raise ValueError(
+            f"orb_summary row for {session_date} contains a NULL or invalid value "
+            f"(atm={atm!r}, fut_high={fut_high!r}, fut_low={fut_low!r}, "
+            f"sp_high={sp_high!r}, sp_low={sp_low!r}): {exc}"
+        ) from exc
 
 
 def _load_reference_inputs(
     conn: sqlite3.Connection, session_date: str, atm: int
 ) -> tuple[StrikeCandleInput, ...] | None:
+    """Build the 13-strike reference ladder for ``session_date`` from
+    ``orb_levels``. Returns ``None`` (an "incomplete ladder", the same
+    outcome as a genuinely missing row) if any strike's CE/PE row is
+    missing *or* contains a NULL/invalid OHLC value that cannot be
+    converted to ``Decimal`` - a NULL value is data this tool cannot
+    use, structurally no different from a missing row."""
     half_width = (EXPECTED_LADDER_SIZE // 2) * int(STRIKE_SPACING)
     strikes = [atm - half_width + i * int(STRIKE_SPACING) for i in range(EXPECTED_LADDER_SIZE)]
     timestamp = datetime.combine(date_cls.fromisoformat(session_date), datetime.min.time()).replace(
@@ -163,14 +184,17 @@ def _load_reference_inputs(
             (session_date, strike),
         )
         for side, open_, high, low, close in cur.fetchall():
-            candles[side] = MarketSnapshot(
-                timestamp=timestamp,
-                underlying_price=Decimal(str(close)),
-                open=Decimal(str(open_)),
-                high=Decimal(str(high)),
-                low=Decimal(str(low)),
-                close=Decimal(str(close)),
-            )
+            try:
+                candles[side] = MarketSnapshot(
+                    timestamp=timestamp,
+                    underlying_price=Decimal(str(close)),
+                    open=Decimal(str(open_)),
+                    high=Decimal(str(high)),
+                    low=Decimal(str(low)),
+                    close=Decimal(str(close)),
+                )
+            except (TypeError, InvalidOperation):
+                continue  # NULL/invalid value - treat this candle as absent, see docstring
         if "CE" not in candles or "PE" not in candles:
             return None
         inputs.append(
@@ -258,13 +282,43 @@ def run_regression_suite(db_path: Path, output_dir: Path) -> tuple[RegressionChe
     """Run the full regression suite: every trading day in
     ``orb_summary`` at ``db_path``, replayed and compared against its
     legacy values. One :class:`RegressionCheckResult` per day, in date
-    order."""
+    order.
+
+    Raises:
+        RuntimeError: if ``db_path`` cannot be read as a SQLite
+            database at all (missing, corrupted, or not a database
+            file) - a clear, wrapped message rather than a raw
+            ``sqlite3.Error`` traceback.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     try:
+        try:
+            trading_days = _load_trading_days(conn)
+        except sqlite3.Error as exc:
+            raise RuntimeError(f"Failed to read regression data from {db_path}: {exc}") from exc
+
         results: list[RegressionCheckResult] = []
-        for session_date in _load_trading_days(conn):
-            legacy = _load_legacy_expected(conn, session_date)
+        for session_date in trading_days:
+            try:
+                legacy = _load_legacy_expected(conn, session_date)
+            except ValueError as exc:
+                results.append(
+                    RegressionCheckResult(
+                        session_date=session_date,
+                        expected_high=None,
+                        actual_high=None,
+                        expected_low=None,
+                        actual_low=None,
+                        expected_top=None,
+                        actual_top=None,
+                        expected_bottom=None,
+                        actual_bottom=None,
+                        status=_STATUS_FAIL,
+                        differences=(str(exc),),
+                    )
+                )
+                continue
             if legacy is None:
                 continue  # pragma: no cover - unreachable: date came from this same table
             atm, fut_high, fut_low, sp_high, sp_low = legacy
@@ -357,7 +411,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    results = run_regression_suite(args.db_path, args.output_dir)
+    try:
+        results = run_regression_suite(args.db_path, args.output_dir)
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}")
+        return 1
 
     print(render_summary(results))
     if any(not result.passed for result in results):
