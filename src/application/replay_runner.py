@@ -61,6 +61,11 @@ the current one. This is a distinct data source from
 first-candle data, not from ``dataset.snapshots`` at all) - see
 ``ORBStage``'s own docstring for why that separation means no
 candle-slicing is needed when passing this list to ``ORBEngine``.
+
+Strategy timeline (Sprint: "Strategy Timeline"): once every candle has
+run, ``application.strategy_timeline.build_strategy_timeline`` builds
+``ReplayResult.strategy_timeline`` from the same ``business_results``
+this method already collects - no new value is computed.
 """
 
 from __future__ import annotations
@@ -71,6 +76,7 @@ import uuid
 from application.replay_configuration import ReplayConfiguration
 from application.replay_result import ReplayResult
 from application.replay_session import ReplaySession, ReplayStatistics, ReplayStatus
+from application.strategy_timeline import build_strategy_timeline
 from business.business_result import BusinessResult
 from business.orchestrator import BusinessOrchestrator
 from business.pipeline_context import PipelineContext
@@ -186,10 +192,13 @@ class ReplayRunner:
             statistics=statistics,
         )
 
+        strategy_timeline = build_strategy_timeline(tuple(business_results), ended_at)
+
         return ReplayResult(
             session=session,
             configuration=configuration,
             generated_at=self._clock(),
             business_results=tuple(business_results),
             events=events,
+            strategy_timeline=strategy_timeline,
         )

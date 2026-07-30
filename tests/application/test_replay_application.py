@@ -17,7 +17,7 @@ from business.execution_context import ExecutionContext
 from business.pipeline_context import PipelineContext
 from business.stages.orb_stage import ORBStage
 from business.stages.weekly_future_stage import WeeklyFutureStage
-from core.enums import OptionType, ORBStatus
+from core.enums import OptionType, ORBStatus, TimelineEventType
 from core.exceptions import ApplicationError, EventBusError, ValidationError
 from events.event_bus import EventBus
 from models.market_snapshot import MarketSnapshot
@@ -532,3 +532,37 @@ class TestORBStageIntegration:
 
         candle_counts = [len(br.context.candles) for br in result.business_results]
         assert candle_counts == list(range(1, len(result.business_results) + 1))
+
+
+class TestStrategyTimelineIntegration:
+    """Sprint: Strategy Timeline. Replay integration."""
+
+    def test_replay_result_carries_a_populated_strategy_timeline(self, tmp_path: Path) -> None:
+        anchor_strike = Decimal(24200)
+        weekly_future_stage = WeeklyFutureStage(
+            anchor_strike=anchor_strike,
+            weekly_future_calculator=WeeklyFutureCalculator(),
+            strike_selector=StrikeSelector(),
+        )
+        orb_stage = ORBStage(
+            anchor_strike=anchor_strike, side=OptionType.CALL, orb_engine=ORBEngine()
+        )
+        config = _config(tmp_path, reference_inputs=_reference_inputs())
+        app = ReplayApplication(configuration=config, stages=(weekly_future_stage, orb_stage))
+
+        result = app.run()
+
+        types = [event.event_type for event in result.strategy_timeline.events]
+        assert TimelineEventType.REFERENCE_LEVEL_CREATED in types
+        assert TimelineEventType.WEEKLY_FUTURE_CALCULATED in types
+        assert TimelineEventType.STRIKE_SELECTED in types
+        assert types.count(TimelineEventType.ORB_CALCULATED) == len(result.business_results)
+        assert types[-1] == TimelineEventType.REPLAY_FINISHED
+
+    def test_no_stages_registered_still_produces_replay_finished(self, tmp_path: Path) -> None:
+        app = ReplayApplication(configuration=_config(tmp_path))
+
+        result = app.run()
+
+        assert len(result.strategy_timeline.events) == 1
+        assert result.strategy_timeline.events[0].event_type == TimelineEventType.REPLAY_FINISHED

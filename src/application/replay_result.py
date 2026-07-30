@@ -7,6 +7,12 @@ per candle) rather than defining a parallel "ExecutionSummary" type -
 see ``ReplayRunner``'s own docstring and this sprint's Architecture
 Review for why a second summary type was rejected as duplicating
 existing v0.6.0 code.
+
+``strategy_timeline`` (Sprint: "Strategy Timeline") is built by
+``application.replay_runner.ReplayRunner`` from the same
+``business_results`` this type already carries, via
+``application.strategy_timeline.build_strategy_timeline`` - no new
+value is computed, only reshaped into a chronological event log.
 """
 
 from __future__ import annotations
@@ -16,6 +22,7 @@ from datetime import datetime
 
 from application.replay_configuration import ReplayConfiguration
 from application.replay_session import ReplaySession
+from application.strategy_timeline import StrategyTimeline
 from business.business_result import BusinessResult
 from core.events import Event
 from core.exceptions import ValidationError
@@ -38,6 +45,8 @@ class ReplayResult:
             :class:`~application.replay_runner.ReplayRunner`. Empty
             otherwise.
         generated_at: When this result was produced.
+        strategy_timeline: The chronological event log built from
+            ``business_results`` - see module docstring.
     """
 
     session: ReplaySession
@@ -45,6 +54,7 @@ class ReplayResult:
     generated_at: datetime
     business_results: tuple[BusinessResult, ...] = field(default_factory=tuple)
     events: tuple[Event, ...] = field(default_factory=tuple)
+    strategy_timeline: StrategyTimeline = field(default_factory=StrategyTimeline)
 
     def __post_init__(self) -> None:
         if self.session is None:

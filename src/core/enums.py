@@ -86,6 +86,20 @@ class ORBStatus(Enum):
 
 
 @unique
+class TimelineEventType(Enum):
+    """The six event kinds a :class:`~application.strategy_timeline.StrategyTimeline`
+    records (Sprint: "Strategy Timeline") - a pure infrastructure/
+    observability concept, not a business rule."""
+
+    REFERENCE_LEVEL_CREATED = "REFERENCE_LEVEL_CREATED"
+    WEEKLY_FUTURE_CALCULATED = "WEEKLY_FUTURE_CALCULATED"
+    STRIKE_SELECTED = "STRIKE_SELECTED"
+    ORB_CALCULATED = "ORB_CALCULATED"
+    REPLAY_FINISHED = "REPLAY_FINISHED"
+    PIPELINE_ERROR = "PIPELINE_ERROR"
+
+
+@unique
 class EventPriority(IntEnum):
     """Dispatch-priority tiers for :class:`events.event_bus.EventBus`.
 
