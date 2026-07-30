@@ -29,6 +29,7 @@ class TestConstruction:
         assert result.warnings == ()
         assert result.execution_time == timedelta()
         assert result.diagnostics == ()
+        assert result.stage_diagnostics == ()
         assert result.error is None
 
     def test_failure_with_error(self) -> None:

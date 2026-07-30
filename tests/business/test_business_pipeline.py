@@ -240,13 +240,91 @@ class TestEventForwarding:
 
 class TestExecutionTime:
     def test_execution_time_reflects_injected_clock(self) -> None:
-        ticks = iter([_ts(0), _ts(5)])
+        ticks = iter([_ts(0), _ts(1), _ts(4), _ts(5)])
         pipeline = BusinessPipeline((_AlwaysReadyStage("weekly_future"),))
         execution = ExecutionContext(mode=ExecutionMode.LIVE, clock=lambda: next(ticks))
 
         result = pipeline.execute(_context(), execution)
 
         assert result.execution_time == timedelta(seconds=5)
+
+
+class TestStageDiagnostics:
+    def test_completed_stage_records_success_diagnostic(self) -> None:
+        pipeline = BusinessPipeline((_AlwaysReadyStage("weekly_future"),))
+        ticks = iter([_ts(0), _ts(1), _ts(3), _ts(3)])
+        execution = ExecutionContext(mode=ExecutionMode.LIVE, clock=lambda: next(ticks))
+
+        result = pipeline.execute(_context(), execution)
+
+        assert len(result.stage_diagnostics) == 1
+        diagnostic = result.stage_diagnostics[0]
+        assert diagnostic.stage_name == "weekly_future"
+        assert diagnostic.start_time == _ts(1)
+        assert diagnostic.end_time == _ts(3)
+        assert diagnostic.duration == timedelta(seconds=2)
+        assert diagnostic.success is True
+        assert diagnostic.failure_reason is None
+
+    def test_not_ready_stage_records_failed_diagnostic(self) -> None:
+        pipeline = BusinessPipeline((_NeverReadyStage("strike_selection"),))
+
+        result = pipeline.execute(_context(), ExecutionContext(mode=ExecutionMode.LIVE))
+
+        assert len(result.stage_diagnostics) == 1
+        diagnostic = result.stage_diagnostics[0]
+        assert diagnostic.success is False
+        assert diagnostic.failure_reason == "prerequisites not met"
+
+    def test_unresolved_stage_records_failed_diagnostic(self) -> None:
+        pipeline = BusinessPipeline((_UnresolvedStage("weekly_future"),))
+
+        result = pipeline.execute(_context(), ExecutionContext(mode=ExecutionMode.LIVE))
+
+        diagnostic = result.stage_diagnostics[0]
+        assert diagnostic.success is False
+        assert "UNRESOLVED" in diagnostic.failure_reason  # type: ignore[operator]
+
+    def test_faulting_stage_records_failed_diagnostic(self) -> None:
+        pipeline = BusinessPipeline((_FaultingStage("weekly_future"),))
+
+        result = pipeline.execute(_context(), ExecutionContext(mode=ExecutionMode.LIVE))
+
+        diagnostic = result.stage_diagnostics[0]
+        assert diagnostic.success is False
+        assert "FAILED" in diagnostic.failure_reason  # type: ignore[operator]
+
+    def test_stage_after_halt_records_failed_diagnostic(self) -> None:
+        pipeline = BusinessPipeline(
+            (_NeverReadyStage("strike_selection"), _AlwaysReadyStage("tp_engine"))
+        )
+
+        result = pipeline.execute(_context(), ExecutionContext(mode=ExecutionMode.LIVE))
+
+        assert len(result.stage_diagnostics) == 2
+        halted_diagnostic = result.stage_diagnostics[1]
+        assert halted_diagnostic.stage_name == "tp_engine"
+        assert halted_diagnostic.success is False
+        assert halted_diagnostic.failure_reason == "pipeline already halted"
+
+    def test_one_diagnostic_per_registered_stage(self) -> None:
+        pipeline = BusinessPipeline(
+            (
+                _AlwaysReadyStage("weekly_future"),
+                _AlwaysReadyStage("strike_selection"),
+                _AlwaysReadyStage("tp_engine"),
+            )
+        )
+
+        result = pipeline.execute(_context(), ExecutionContext(mode=ExecutionMode.LIVE))
+
+        assert len(result.stage_diagnostics) == 3
+        assert [d.stage_name for d in result.stage_diagnostics] == [
+            "weekly_future",
+            "strike_selection",
+            "tp_engine",
+        ]
+        assert all(d.success for d in result.stage_diagnostics)
 
 
 class TestStagesProperty:

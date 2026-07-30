@@ -29,12 +29,14 @@ populated for the latter) and from the diagnostics trail.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from business.business_errors import StageExecutionError
 from business.business_result import BusinessResult
 from business.execution_context import ExecutionContext
 from business.pipeline_context import PipelineContext
+from business.stage_diagnostics import StageDiagnostic
 from core.events import Event
 from core.exceptions import StrategyEngineError, UnresolvedBusinessRuleError, ValidationError
 
@@ -124,6 +126,14 @@ class BusinessPipeline:
 
         Never raises itself - every stage-level exception is caught
         and reflected in the returned :class:`~business.business_result.BusinessResult`.
+
+        Every stage in :attr:`stages` - including one skipped because
+        the pipeline already halted - gets exactly one
+        :class:`~business.stage_diagnostics.StageDiagnostic` in the
+        returned result's ``stage_diagnostics``, timed via
+        ``execution.clock()`` (never ``datetime.now()``), so a caller
+        can see where the run's time actually went without this
+        pipeline recomputing or inventing any business value.
         """
         start = execution.clock()
         current = context
@@ -131,17 +141,30 @@ class BusinessPipeline:
         skipped: list[str] = []
         warnings: list[str] = []
         diagnostics: list[str] = []
+        stage_diagnostics: list[StageDiagnostic] = []
         error: StageExecutionError | None = None
         success = True
         halted = False
 
         for stage in self._stages:
+            stage_start = execution.clock()
+
             if halted:
+                stage_diagnostics.append(
+                    self._failed_diagnostic(
+                        stage.name, stage_start, execution.clock(), "pipeline already halted"
+                    )
+                )
                 skipped.append(stage.name)
                 diagnostics.append(f"{stage.name}: skipped - pipeline already halted")
                 continue
 
             if not stage.is_ready(current):
+                stage_diagnostics.append(
+                    self._failed_diagnostic(
+                        stage.name, stage_start, execution.clock(), "prerequisites not met"
+                    )
+                )
                 skipped.append(stage.name)
                 diagnostics.append(f"{stage.name}: skipped - prerequisites not met")
                 success = False
@@ -151,19 +174,38 @@ class BusinessPipeline:
             try:
                 outcome = stage.run(current, execution)
             except UnresolvedBusinessRuleError as exc:
+                stage_diagnostics.append(
+                    self._failed_diagnostic(
+                        stage.name, stage_start, execution.clock(), f"UNRESOLVED - {exc}"
+                    )
+                )
                 skipped.append(stage.name)
                 diagnostics.append(f"{stage.name}: UNRESOLVED - {exc}")
                 success = False
                 halted = True
                 continue
             except StrategyEngineError as exc:
+                reason = f"FAILED - {type(exc).__name__}: {exc}"
+                stage_diagnostics.append(
+                    self._failed_diagnostic(stage.name, stage_start, execution.clock(), reason)
+                )
                 skipped.append(stage.name)
                 error = StageExecutionError(f"{stage.name} raised {type(exc).__name__}: {exc}")
-                diagnostics.append(f"{stage.name}: FAILED - {type(exc).__name__}: {exc}")
+                diagnostics.append(f"{stage.name}: {reason}")
                 success = False
                 halted = True
                 continue
 
+            stage_end = execution.clock()
+            stage_diagnostics.append(
+                StageDiagnostic(
+                    stage_name=stage.name,
+                    start_time=stage_start,
+                    end_time=stage_end,
+                    duration=stage_end - stage_start,
+                    success=True,
+                )
+            )
             current = outcome.context
             warnings.extend(outcome.warnings)
             completed.append(stage.name)
@@ -182,5 +224,25 @@ class BusinessPipeline:
             warnings=tuple(warnings),
             execution_time=elapsed,
             diagnostics=tuple(diagnostics),
+            stage_diagnostics=tuple(stage_diagnostics),
             error=error,
+        )
+
+    @staticmethod
+    def _failed_diagnostic(
+        stage_name: str,
+        start_time: datetime,
+        end_time: datetime,
+        failure_reason: str,
+    ) -> StageDiagnostic:
+        """Build a ``success=False`` :class:`~business.stage_diagnostics.StageDiagnostic`
+        - a tiny helper only to avoid repeating this construction at
+        every skip/halt branch in :meth:`execute`."""
+        return StageDiagnostic(
+            stage_name=stage_name,
+            start_time=start_time,
+            end_time=end_time,
+            duration=end_time - start_time,
+            success=False,
+            failure_reason=failure_reason,
         )

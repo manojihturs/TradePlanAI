@@ -18,6 +18,7 @@ from datetime import timedelta
 
 from business.business_errors import BusinessOrchestrationError
 from business.pipeline_context import PipelineContext
+from business.stage_diagnostics import StageDiagnostic
 from core.exceptions import ValidationError
 
 
@@ -43,6 +44,12 @@ class BusinessResult:
             injected :data:`~core.protocols.Clock`.
         diagnostics: Pipeline-level trace, one entry per stage
             outcome (completed / skipped / unresolved / faulted).
+        stage_diagnostics: One :class:`~business.stage_diagnostics.StageDiagnostic`
+            per registered stage - structured start/end/duration/
+            success/failure-reason, for every stage the pipeline
+            reached (including one skipped after the pipeline
+            halted). See ``business_pipeline.BusinessPipeline.execute``'s
+            own docstring for exactly when each is recorded.
         error: The wrapped fault, if the pipeline stopped due to a
             stage raising anything other than
             ``UnresolvedBusinessRuleError``. ``None`` on success and
@@ -56,6 +63,7 @@ class BusinessResult:
     warnings: tuple[str, ...] = field(default_factory=tuple)
     execution_time: timedelta = timedelta()
     diagnostics: tuple[str, ...] = field(default_factory=tuple)
+    stage_diagnostics: tuple[StageDiagnostic, ...] = field(default_factory=tuple)
     error: BusinessOrchestrationError | None = None
 
     def __post_init__(self) -> None:
