@@ -14,3 +14,9 @@ orb_auto_run.log.err
 orb_ui_run.log
 ui_run.log
 watchdog.log
+.coverage
+*.log
+*.log.err
+backtest_summary.xlsx
+live_paper_trading_*.xlsx
+real_backtest_*.xlsx
