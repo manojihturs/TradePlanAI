@@ -57,3 +57,26 @@ class RuleExecutionError(RuleFrameworkError):
     successfully-produced result) - only a framework-level defect, such
     as a missing required field.
     """
+
+
+class UnresolvedDependencyError(RuleFrameworkError):
+    """Raised by :meth:`~trading_engine.rules.registry.RuleRegistry.execution_order`
+    when a registered rule's declared dependency cannot be resolved.
+
+    Two distinct causes share this exception (distinguishable by the
+    message text, per Milestone 6.3's test scenarios):
+
+    - The dependency Rule ID is structurally malformed - it does not
+      match the ``<CATEGORY>-<NNN>`` convention defined in
+      ``docs/RULE_INDEX.md`` (an "unsupported dependency").
+    - The dependency Rule ID is well-formed but no rule with that ID
+      is currently registered in this registry (a "missing
+      dependency").
+    """
+
+
+class CircularDependencyError(RuleFrameworkError):
+    """Raised by :meth:`~trading_engine.rules.registry.RuleRegistry.execution_order`
+    when the registered rules' declared dependencies form a cycle,
+    making a valid execution order impossible to compute.
+    """

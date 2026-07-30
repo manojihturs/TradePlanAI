@@ -19,9 +19,17 @@ Session State mutation happens anywhere in this package.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+from trading_engine.diagnostics.events import (
+    ExecutionFailed,
+    RuleFinished,
+    RuleSkipped,
+    RuleStarted,
+)
+from trading_engine.diagnostics.sink import DiagnosticsSink, NullDiagnosticsSink
 from trading_engine.engine.engine_configuration import EngineConfiguration
 from trading_engine.engine.exceptions import PipelineExecutionError
 from trading_engine.rules.context import RuleExecutionContext
@@ -67,8 +75,18 @@ class ExecutionPipeline:
         rules: Sequence[Rule],
         context: RuleExecutionContext,
         configuration: EngineConfiguration,
+        diagnostics_sink: DiagnosticsSink | None = None,
     ) -> PipelineOutcome:
         """Evaluate ``rules`` in order against ``context``.
+
+        ``diagnostics_sink`` is only ever used when
+        ``configuration.logging_enabled`` is ``True`` - if it is
+        ``False``, every diagnostic event this method would otherwise
+        emit is routed to
+        :class:`~trading_engine.diagnostics.sink.NullDiagnosticsSink`
+        instead, regardless of what ``diagnostics_sink`` was passed.
+        This makes the no-op guarantee a property of this method
+        itself, not something callers must remember to arrange.
 
         Stopping conditions (in the order checked, per rule):
 
@@ -94,6 +112,12 @@ class ExecutionPipeline:
         ``rules_executed`` with no corresponding result, and a warning
         notes the dry run.
         """
+        sink = (
+            diagnostics_sink
+            if configuration.logging_enabled and diagnostics_sink is not None
+            else NullDiagnosticsSink()
+        )
+
         rules_executed: list[str] = []
         results: list[RuleExecutionResult] = []
         warnings: list[str] = []
@@ -108,21 +132,63 @@ class ExecutionPipeline:
                     f"Maximum rule count ({configuration.maximum_rule_count}) reached; "
                     f"stopping before evaluating rule {rule.id()!r}."
                 )
+                sink.emit(
+                    RuleSkipped(
+                        event_id=uuid.uuid4(),
+                        occurred_at=context.clock(),
+                        rule_id=rule.id(),
+                        reason="maximum rule count reached",
+                    )
+                )
                 break
 
             rules_executed.append(rule.id())
 
             if configuration.dry_run:
                 warnings.append(f"Dry run: rule {rule.id()!r} was not evaluated.")
+                sink.emit(
+                    RuleSkipped(
+                        event_id=uuid.uuid4(),
+                        occurred_at=context.clock(),
+                        rule_id=rule.id(),
+                        reason="dry run",
+                    )
+                )
                 continue
+
+            sink.emit(
+                RuleStarted(event_id=uuid.uuid4(), occurred_at=context.clock(), rule_id=rule.id())
+            )
+            started_at = context.clock()
 
             try:
                 result = rule.evaluate(context)
             except RuleFrameworkError as exc:
                 errors.append(f"Fatal framework exception evaluating rule {rule.id()!r}: {exc}")
+                sink.emit(
+                    ExecutionFailed(
+                        event_id=uuid.uuid4(),
+                        occurred_at=context.clock(),
+                        rule_id=rule.id(),
+                        exception_type=type(exc).__name__,
+                        message=str(exc),
+                        fatal=True,
+                    )
+                )
                 break
             except Exception as exc:
                 message = f"Unexpected exception evaluating rule {rule.id()!r}: {exc}"
+                stops_iteration = configuration.fail_fast or not configuration.continue_on_error
+                sink.emit(
+                    ExecutionFailed(
+                        event_id=uuid.uuid4(),
+                        occurred_at=context.clock(),
+                        rule_id=rule.id(),
+                        exception_type=type(exc).__name__,
+                        message=str(exc),
+                        fatal=stops_iteration,
+                    )
+                )
                 if configuration.fail_fast:
                     raise PipelineExecutionError(message) from exc
                 errors.append(message)
@@ -131,6 +197,16 @@ class ExecutionPipeline:
                 break
             else:
                 results.append(result)
+                finished_at = context.clock()
+                sink.emit(
+                    RuleFinished(
+                        event_id=uuid.uuid4(),
+                        occurred_at=finished_at,
+                        rule_id=rule.id(),
+                        outcome_name=result.outcome.name,
+                        duration_seconds=(finished_at - started_at).total_seconds(),
+                    )
+                )
 
         return PipelineOutcome(
             rules_executed=tuple(rules_executed),
@@ -138,9 +214,3 @@ class ExecutionPipeline:
             warnings=tuple(warnings),
             errors=tuple(errors),
         )
-
-    # TODO (RULE_ENGINE_ARCHITECTURE): configuration.logging_enabled is
-    # stored by EngineConfiguration but never read here - no logging
-    # format/destination is evidenced anywhere in the reviewed
-    # documents, so no logging implementation exists in this
-    # milestone.

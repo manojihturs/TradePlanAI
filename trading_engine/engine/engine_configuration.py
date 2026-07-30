@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from trading_engine.diagnostics.sink import DiagnosticsSink
 from trading_engine.engine.exceptions import EngineConfigurationError
 
 
@@ -46,12 +47,25 @@ class EngineConfiguration:
             Pipeline will evaluate in one run before stopping (recorded
             as a warning, not an error). ``None`` means unbounded. Must
             be a positive integer if set.
-        logging_enabled: Whether the engine should log its activity.
-            No logging implementation exists yet in this milestone -
-            see ``# TODO`` in :mod:`.execution_pipeline`.
+        logging_enabled: Whether
+            :class:`~trading_engine.rules.registry.RuleRegistry` and
+            the Strategy Engine should emit diagnostic events (see
+            ``trading_engine/diagnostics/``) for this run. When
+            ``False`` (the default), every diagnostic emission point
+            is routed to
+            :class:`~trading_engine.diagnostics.sink.NullDiagnosticsSink`
+            regardless of ``diagnostics_sink``, guaranteeing a true
+            no-op.
         dry_run: If ``True``, the Pipeline enumerates the rules it
             would evaluate but does not call any rule's ``evaluate()``
             - no RuleExecutionResult is produced for any rule.
+        diagnostics_sink: Where diagnostic events are sent when
+            ``logging_enabled`` is ``True``. ``None`` (the default)
+            means "use
+            :class:`~trading_engine.diagnostics.sink.StandardLoggingDiagnosticsSink`" -
+            see
+            :meth:`~trading_engine.engine.strategy_engine.StrategyEngine.run`.
+            Ignored entirely when ``logging_enabled`` is ``False``.
     """
 
     fail_fast: bool = False
@@ -59,6 +73,7 @@ class EngineConfiguration:
     maximum_rule_count: int | None = None
     logging_enabled: bool = False
     dry_run: bool = False
+    diagnostics_sink: DiagnosticsSink | None = None
 
     def __post_init__(self) -> None:
         if self.fail_fast and self.continue_on_error:
