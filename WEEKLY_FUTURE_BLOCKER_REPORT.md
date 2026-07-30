@@ -1,6 +1,8 @@
 # Weekly Future Blocker Report
 
-**Status: Implementation BLOCKED.** This document is the formal record of why, built entirely from evidence already extracted from `research/transcripts/TR-001.md` (the only transcript in this repository) and the existing evidence documents (`research/analysis/WEEKLY_FUTURE_EVIDENCE_TABLE.md`, `research/analysis/WEEKLY_FUTURE_VERIFICATION.md`, `research/specification/WeeklyFuture_Specification_v1.md`). No new evidence was sought or fabricated for this report; nothing here is speculation.
+**Status: RESOLVED as of 2026-07-30, for Weekly Future High/Low and Top/Bottom Strike Selection.** See "Resolution (2026-07-30)" at the end of this document. The analysis below is preserved unchanged as the historical record of why this was blocked and for how long — it remains accurate about `TR-001.md` specifically, which is now background/historical evidence rather than the authoritative source.
+
+**Original status (as first written): Implementation BLOCKED.** This document is the formal record of why, built entirely from evidence already extracted from `research/transcripts/TR-001.md` (the only transcript in this repository) and the existing evidence documents (`research/analysis/WEEKLY_FUTURE_EVIDENCE_TABLE.md`, `research/analysis/WEEKLY_FUTURE_VERIFICATION.md`, `research/specification/WeeklyFuture_Specification_v1.md`). No new evidence was sought or fabricated for this report; nothing here is speculation.
 
 ---
 
@@ -79,3 +81,26 @@ No other path (inference from trading-domain general knowledge, reconstruction f
 - **Delay** — recommended. Hold `weekly_future/` (and everything downstream of it) exactly where it is now: framework complete and frozen through Sprint 4, `interfaces/weekly_future_calculator.py` remaining a Protocol-only stub, no placeholder logic anywhere. Resume only when Section 5's evidence bar is met.
 
 This report is the design-decision record for that delay, so that neither a future session of this assistant nor another contributor implements `weekly_future/` from the current contradictory evidence without first seeing this document.
+
+---
+
+## Resolution (2026-07-30)
+
+On 2026-07-30, the Product Owner supplied 3 independent, fully worked examples (6 data points: Weekly Future High and Low for each of 3 trading dates) directly in chat. Every value was independently recomputed and matched exactly — zero contradictions, meeting the fallback evidence bar this report set in §5.
+
+**Formula (see `research/specifications/WEEKLY_FUTURE_FORMULA_SPECIFICATION.md` v1.0 for the full specification):**
+
+```
+Weekly Future High = Strike + (CE High(1st 5-min) − PE Low(1st 5-min))
+Weekly Future Low  = Strike − (PE High(1st 5-min) − CE Low(1st 5-min))
+Top Strike         = round(Weekly Future High / 50) * 50
+Bottom Strike      = round(Weekly Future Low / 50) * 50
+```
+
+This single signed-subtraction formula also resolves the sign-flip ambiguity flagged in §3 of this report — no special-case ordering rule is needed; the subtraction goes negative automatically when required (demonstrated directly in the 2026-07-28 example).
+
+**`TR-001.md`'s status:** reclassified from sole/blocking source to historical/background evidence. Every contradiction documented in §2 of this report remains an accurate description of `TR-001.md` itself — nothing there was wrong. `TR-001.md` is simply no longer the source consulted for the numeric formula; `research/specifications/WEEKLY_FUTURE_FORMULA_SPECIFICATION.md` is.
+
+**Still unresolved, per the new specification's own §6–§8:** Entry rules, Exit rules (Stop Loss, Time Exit), and Exceptions (Holiday, Gap Up, Gap Down, Invalid Data). Only Weekly Future High/Low and Top/Bottom Strike Selection are resolved by this evidence.
+
+**Downstream effect:** `WeeklyFutureCalculator` and `StrikeSelector` move from BLOCKED to READY FOR IMPLEMENTATION. `TPEngine`, `QualificationEngine`, `StopLossEngine`, `TrailingStopEngine` remain BLOCKED — their own evidence gaps (competitor identity, SL rule, trailing mechanics) are untouched by this resolution.

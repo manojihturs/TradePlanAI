@@ -55,6 +55,27 @@ class AmbiguousWinnerError(StrategyEngineError):
     """
 
 
+class HistoricalDataError(StrategyEngineError):
+    """Raised when a historical market-data source cannot be read, or
+    fails validation (missing/duplicate timestamps, invalid OHLC,
+    invalid volume, schema errors) - see
+    ``data.historical_data_validation.HistoricalDataValidation`` for
+    the itemized report; ``data.historical_data_provider.HistoricalDataProvider.validate``
+    returns that report directly without raising, for a caller that
+    wants to inspect issues rather than catch this exception.
+    """
+
+
+class ApplicationError(StrategyEngineError):
+    """Raised by ``application.replay_application.ReplayApplication``
+    when a composition-root step fails (dataset load, replay
+    execution, report writing) - always wraps the original exception
+    via ``raise ... from exc`` so the underlying cause is preserved;
+    this class only adds a stage-labeled message, it does not attempt
+    any recovery.
+    """
+
+
 class UnresolvedBusinessRuleError(StrategyEngineError):
     """Raised by any interface/abstract method whose underlying
     business rule is still MISSING INFORMATION per
