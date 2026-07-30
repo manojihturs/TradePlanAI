@@ -25,11 +25,22 @@ writing) is wrapped in :class:`~core.exceptions.ApplicationError`
 with a stage-labeled message and ``from exc`` - "gracefully report"
 is read as *clearly labeled*, never as *silently recovered*, per this
 sprint's own "never invent recovery behaviour" instruction.
+
+Logging (Sprint: "Logging", Delivery Mode): uses the standard library
+:mod:`logging` module via ``logging.getLogger(__name__)``, matching
+this repository's own existing convention (e.g.
+``strategy/replay_engine.py``) rather than introducing a new logging
+abstraction - no handler/level is configured here, that remains the
+caller's responsibility. Logs "Replay started"/"Replay finished" (with
+succeeded/failed counts and execution time) at ``INFO``, and every
+caught failure at ``ERROR`` before it is re-raised as
+``ApplicationError`` - observability only, no behaviour change.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -57,6 +68,8 @@ from replay.replay_engine import ReplayEngine
 
 _REPLAY_RESULT_FILENAME = "replay_result.json"
 _EVENT_LOG_FILENAME = "event_log.json"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,9 +156,21 @@ class ReplayApplication:
                 exception, if the dataset cannot be loaded, the
                 replay itself fails, or reports cannot be written.
         """
+        logger.info(
+            "Replay started: dataset=%s symbol=%s timeframe=%s",
+            self._configuration.dataset_path,
+            self._configuration.symbol,
+            self._configuration.timeframe,
+        )
         dataset = self._load_dataset()
         result = self._execute_replay(dataset)
         self._write_reports(result)
+        logger.info(
+            "Replay finished: succeeded=%d failed=%d execution_time=%ss",
+            result.succeeded_count,
+            result.failed_count,
+            result.session.duration_seconds,
+        )
         return result
 
     def _load_dataset(self) -> HistoricalDataset:
@@ -157,6 +182,7 @@ class ReplayApplication:
                 tzinfo=self._configuration.tzinfo,
             )
         except Exception as exc:
+            logger.error("Replay failed to load dataset: %s", exc)
             raise ApplicationError(
                 f"Failed to load historical dataset for "
                 f"{self._configuration.symbol}@{self._configuration.timeframe} "
@@ -189,6 +215,7 @@ class ReplayApplication:
                 reference_inputs=self._configuration.reference_inputs,
             )
         except Exception as exc:
+            logger.error("Replay execution failed: %s", exc)
             raise ApplicationError(f"Replay execution failed: {exc}") from exc
 
     def _write_reports(self, result: ReplayResult) -> None:
@@ -201,6 +228,7 @@ class ReplayApplication:
                 json.dumps(_to_serializable(list(result.events)), indent=2), encoding="utf-8"
             )
         except OSError as exc:
+            logger.error("Replay failed to write reports: %s", exc)
             raise ApplicationError(
                 f"Failed to write replay reports to {self._configuration.output_directory}: {exc}"
             ) from exc

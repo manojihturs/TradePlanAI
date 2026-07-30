@@ -43,10 +43,16 @@ single underlying instrument's plain OHLC series, with no strike or
 option-chain dimension at all) is not implemented here and is not
 possible from the data shapes that exist today - see this sprint's
 report for why that remains a caller responsibility, not invented.
+
+Logging (Sprint: "Logging", Delivery Mode): logs "ReferenceBuilder
+completed" at ``INFO`` once the ladder is built, via the standard
+library :mod:`logging` module - matching this repository's existing
+convention, not a new abstraction.
 """
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 from application.replay_configuration import ReplayConfiguration
@@ -62,6 +68,8 @@ from models.reference_level import ReferenceLevel
 from reference_builder.reference_builder import ReferenceBuilder
 from reference_builder.reference_validator import StrikeCandleInput
 from replay.replay_engine import ReplayEngine
+
+logger = logging.getLogger(__name__)
 
 
 class ReplayRunner:
@@ -122,6 +130,7 @@ class ReplayRunner:
         reference_data: tuple[ReferenceLevel, ...] = ()
         if self._reference_builder is not None and reference_inputs:
             reference_data = self._reference_builder.build(session_id, reference_inputs)
+            logger.info("ReferenceBuilder completed: %d levels built", len(reference_data))
 
         business_results: list[BusinessResult] = []
         candles_processed = 0

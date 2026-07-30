@@ -31,10 +31,16 @@ formula against) is constructor-injected, not derived here - which
 strike is "anchor" is itself still unresolved evidence (see
 ``research/specifications/WEEKLY_FUTURE_FORMULA_SPECIFICATION.md``
 v1.0 §1), so this stage does not guess it.
+
+Logging (Sprint: "Logging", Delivery Mode): logs "WeeklyFuture
+completed" and "StrikeSelector completed" at ``INFO`` immediately
+after each engine call, via the standard library :mod:`logging`
+module - observability only, no behaviour change.
 """
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 
 from business.business_pipeline import StageOutcome
@@ -44,6 +50,8 @@ from core.exceptions import ValidationError
 from interfaces.strike_selector import StrikeSelector
 from interfaces.weekly_future_calculator import WeeklyFutureCalculator
 from models.reference_level import ReferenceLevel
+
+logger = logging.getLogger(__name__)
 
 
 class WeeklyFutureStage:
@@ -84,8 +92,14 @@ class WeeklyFutureStage:
         weekly_future = self._weekly_future_calculator.calculate(
             context.session_id, level, context.candle_timestamp
         )
+        logger.info("WeeklyFuture completed: high=%s low=%s", weekly_future.high, weekly_future.low)
         strike_selection = self._strike_selector.select(
             context.session_id, weekly_future, context.candle_timestamp
+        )
+        logger.info(
+            "StrikeSelector completed: top=%s bottom=%s",
+            strike_selection.top_strike,
+            strike_selection.bottom_strike,
         )
         updated = (
             context.with_reference_strike(self._anchor_strike)

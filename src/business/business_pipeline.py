@@ -24,10 +24,17 @@ in :class:`~business.business_errors.StageExecutionError`, and also
 stops the pipeline - the distinction between these two stop reasons is
 readable from ``BusinessResult.error`` (``None`` for the former,
 populated for the latter) and from the diagnostics trail.
+
+Logging (Sprint: "Logging", Delivery Mode): a genuine stage fault (not
+an expected ``UnresolvedBusinessRuleError`` stop) is logged at
+``ERROR`` via the standard library :mod:`logging` module before being
+wrapped in ``StageExecutionError`` - observability only, this does not
+change which exceptions are treated as faults vs. expected outcomes.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol, runtime_checkable
@@ -39,6 +46,8 @@ from business.pipeline_context import PipelineContext
 from business.stage_diagnostics import StageDiagnostic
 from core.events import Event
 from core.exceptions import StrategyEngineError, UnresolvedBusinessRuleError, ValidationError
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +195,7 @@ class BusinessPipeline:
                 continue
             except StrategyEngineError as exc:
                 reason = f"FAILED - {type(exc).__name__}: {exc}"
+                logger.error("Stage %s failed: %s", stage.name, exc)
                 stage_diagnostics.append(
                     self._failed_diagnostic(stage.name, stage_start, execution.clock(), reason)
                 )

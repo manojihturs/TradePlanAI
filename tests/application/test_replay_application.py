@@ -398,3 +398,92 @@ class TestEdgeCaseStress:
 
         with pytest.raises(ApplicationError, match="Replay execution failed"):
             app.run()
+
+
+class TestLogging:
+    """Sprint: Logging. Every replay must log started/finished with
+    execution time, ReferenceBuilder/WeeklyFuture/StrikeSelector
+    completion, and failures - via the standard library logging
+    module."""
+
+    def test_logs_replay_started_and_finished(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        app = ReplayApplication(configuration=_config(tmp_path))
+
+        with caplog.at_level("INFO"):
+            result = app.run()
+
+        assert "Replay started" in caplog.text
+        assert "Replay finished" in caplog.text
+        assert f"succeeded={result.succeeded_count}" in caplog.text
+        assert f"failed={result.failed_count}" in caplog.text
+
+    def test_logs_reference_builder_weekly_future_and_strike_selector_completed(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        stage = WeeklyFutureStage(
+            anchor_strike=Decimal(24200),
+            weekly_future_calculator=WeeklyFutureCalculator(),
+            strike_selector=StrikeSelector(),
+        )
+        config = _config(tmp_path, reference_inputs=_reference_inputs())
+        app = ReplayApplication(configuration=config, stages=(stage,))
+
+        with caplog.at_level("INFO"):
+            app.run()
+
+        assert "ReferenceBuilder completed" in caplog.text
+        assert "WeeklyFuture completed" in caplog.text
+        assert "StrikeSelector completed" in caplog.text
+
+    def test_logs_dataset_load_failure(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        config = _config(tmp_path, dataset_path=tmp_path / "does-not-exist.csv")
+        app = ReplayApplication(configuration=config)
+
+        with caplog.at_level("ERROR"), pytest.raises(ApplicationError):
+            app.run()
+
+        assert "Replay failed to load dataset" in caplog.text
+
+    def test_logs_replay_execution_failure(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        config = _config(tmp_path, reference_inputs=_reference_inputs(count=1))
+        app = ReplayApplication(configuration=config)
+
+        with caplog.at_level("ERROR"), pytest.raises(ApplicationError):
+            app.run()
+
+        assert "Replay execution failed" in caplog.text
+
+    def test_logs_report_write_failure(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = ReplayApplication(configuration=_config(tmp_path))
+
+        def raise_oserror(self: Path, *args: object, **kwargs: object) -> None:
+            raise OSError("boom")
+
+        monkeypatch.setattr(Path, "write_text", raise_oserror)
+
+        with caplog.at_level("ERROR"), pytest.raises(ApplicationError):
+            app.run()
+
+        assert "Replay failed to write reports" in caplog.text
+
+    def test_logs_stage_failure(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        stage = WeeklyFutureStage(
+            anchor_strike=Decimal(99999),  # not in the built ladder
+            weekly_future_calculator=WeeklyFutureCalculator(),
+            strike_selector=StrikeSelector(),
+        )
+        config = _config(tmp_path, reference_inputs=_reference_inputs())
+        app = ReplayApplication(configuration=config, stages=(stage,))
+
+        with caplog.at_level("ERROR"):
+            app.run()
+
+        assert "Stage weekly_future failed" in caplog.text
