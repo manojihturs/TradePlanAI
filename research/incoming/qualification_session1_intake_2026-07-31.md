@@ -65,30 +65,61 @@ Applying the rule to this table: a CE trade at Top (24250) would compare against
 
 **Open questions this statement does not yet resolve** (do not guess at these — ask the Product Owner directly):
 
-1. **Entry trigger order** — is the TP High/Low sustain test (this statement) a *gate* that must pass before a Winner (already-implemented `WinnerEngine`) becomes a real entry, or does Winner Detection alone still trigger entry with Qualification only describing the state afterward? "If you found the confident trade then its entry point act as a support" suggests Qualification comes first, but this isn't stated unambiguously enough to implement.
-2. **"These levels act as Entry, Target, SL, Support, Resistance"** — five roles for the same captured level. What determines which role a given level plays in a given moment?
-3. **No dated worked example yet** — a specific day, a specific strike, the actual PE Low/CE High values, and the actual qualify/don't-qualify outcome, so this can be independently recomputed the way Weekly Future was.
+1. ~~**Entry trigger order**~~ — **substantially answered by the Entry Trigger Rule section below** (2026-07-31, second message): the crossover condition *is* the entry trigger itself, checked continuously from 9:20 onward. Still open: exact relationship to the already-implemented `WinnerEngine` touch logic (see cross-check below).
+2. **"These levels act as Entry, Target, SL, Support, Resistance"** — five roles for the same captured level. The Entry Trigger Rule + 22 July Worked Example below clarify Entry and Target; SL/Support/Resistance roles still unclarified.
+3. ~~**No dated worked example yet**~~ — **now supplied**, see Worked Example 1 below (22 July, PE Buy). Still need 2 more independent dated examples per `evidence_acceptance_checklist.md`.
+
+---
+
+## Entry Trigger Rule (Product Owner, supplied in chat, 2026-07-31, second message)
+
+**Status: a real, executable entry condition — the strongest evidence recorded in this document so far.** Recorded verbatim (Tamil original), with an English paraphrase for clarity (paraphrase is NOT the evidence of record — the Tamil original is).
+
+**Verbatim (Tamil):**
+
+> Entry Rule: உங்கள் excel-ல இருந்து. PE Buy Condition: PE Premium crosses 24050 CE High AND CE Premium crosses 24050 PE Low. இரண்டும் ஒரே நேரத்தில். இதுதான் மிகவும் powerful condition. இதுதான் false breakout filter.
+>
+> CE Buy Condition: CE crosses 24000 PE Low AND PE crosses 24000 CE High. இரண்டும் confirmation.
+>
+> Workflow: 9:20 → Fetch ATM → Generate 4 ITM, 4 OTM → Get CE High → Get CE Low → Get PE High → Get PE Low → Draw Lines → Wait → Premium Cross → Competitor Cross → BUY → Trail → Exit.
+
+**English paraphrase (not the evidence of record):** At 9:20, fetch the ATM strike, generate a 9-strike ladder (ATM ± 4 ITM/OTM), capture each strike's first-5-minute CE/PE High/Low, draw those as lines. From then on, watch for a **simultaneous dual crossover**: for a PE Buy at a given strike, its own PE premium must cross that strike's CE High *at the same time* its own CE premium crosses that strike's PE Low. Source: "from your Excel" — i.e. the Product Owner's own trade log, not a fresh invention. Described explicitly as "the most powerful condition" and "a false breakout filter" — the dual, same-instant requirement is the point, not incidental.
+
+**Cross-check against existing confirmed evidence:**
+
+| Statement | Cross-check result |
+|---|---|
+| Same-strike CE+PE dual touch, same candle, as the entry trigger | **Structurally similar to already-implemented `WinnerEngine`** (Rule 3, CONFIRMED: "If CE touches any of its reference levels AND PE touches any of its reference levels during the SAME candle... Winner immediately generates Entry Signal"). **Not yet confirmed identical** — `WinnerEngine` checks touch against *any* of a strike's own CE/PE High/Low band; this statement specifies a more precise cross pattern (PE crosses CE High specifically, CE crosses PE Low specifically) and ties it explicitly to "false breakout filter" framing that `WinnerEngine`'s existing docstring does not mention. **Open question, do not assume equivalence without asking:** is this the same event as Winner Detection under a different name, or a stricter refinement of it? |
+| ATM ± 4 ITM/OTM = 9 strikes | **Possible structural difference from the earlier General Rule Statement** (Top/Bottom, "6 ITM and OTM" = 13 strikes total across two anchors). **Open question, do not guess:** is ATM here the same concept as Top/Bottom Strike, or a third, distinct anchor point? Ask the Product Owner directly before assuming either way. |
 
 ---
 
 ## Worked Example 1
 
-**Date:** _______________
-**Strike(s) involved:** _______________
+**Date:** 22 July (year not stated in the message — context suggests 2026, given NIFTY spot ≈24140 is consistent with the 2026-07-30 session already fetched via Upstox; **please confirm the exact year/date before this is treated as fully specified**).
+**Strike(s) involved:** Entry strike 24150 PE. Competitor strike 24150 CE (same strike, opposite side).
 
 1. **Why was this trade qualified?**
-   (What did the Product Owner actually look at? Quote/paraphrase their exact reasoning, don't summarize it into a rule yet.)
+   Per the Entry Trigger Rule above: PE premium crossed the competitor's (24150 CE) High/Low band at the same instant CE premium crossed the same strike's PE Low/High band — the "dual crossover, false breakout filter" condition. Exact crossed values (which specific High vs Low triggered) were not itemized separately from the Entry price below — **UNKNOWN at this level of detail; would need to ask the Product Owner to point to the exact two numbers crossed at 206.35.**
 
 2. **Which competitor was compared?**
-   (The specific strike/level — e.g. "the strike one below," "the Weekly Future level," "PE Low of strike X" — named as concretely as possible.)
+   24150 CE (same strike, opposite side) — consistent with both the General Rule Statement above (Top/Bottom same-strike-opposite-side) and the Entry Trigger Rule (same-strike CE/PE dual cross).
 
 3. **Why this competitor?**
-   (What made that particular strike/level the right one to compare against, on this specific day?)
+   Not stated separately from the general rule above (same strike's opposite side, by the stated rule itself) — **UNKNOWN whether there was day-specific reasoning beyond applying the general rule.**
 
 4. **Would another competitor have changed the result?**
-   (Ask the Product Owner to consider at least one alternative candidate — e.g. the Exit-stage Rule 2 mapping, `PE(S-1)`/`CE(S+1)` — and say concretely whether qualification would have come out differently using it.)
+   **UNKNOWN — not asked/answered yet.** Worth asking directly: would the adjacent-strike Rule 2 mapping (`PE(S-1)`/`CE(S+1)` = 24100 CE for this PE trade) have produced a different qualification outcome on this same candle?
 
-**Raw supporting data** (CE/PE High/Low values, timestamps, reference levels — attach a screenshot or paste the numbers):
+**Raw supporting data:**
+
+- Entry: **206.35**
+- Target 1: **238.75**
+- Target 2: **269.95**
+- Pattern stated: "Entry line → Next CE High → Next CE High → Next CE High" — i.e. the ladder target sequence walks up through successive CE High values on the (competitor-side) ladder, one rung per target, not a single fixed Target.
+- NIFTY Spot at the time: 24140 (from the introductory example in the same message — not explicitly re-stated for this exact 22 July trade, **please confirm this spot value belongs to this specific trade**).
+
+**Cross-check against already-implemented Target logic:** this "ladder of successive Next CE Highs" is **structurally different from Rule 2's single fixed Target** (`CE(S+1)`/`PE(S-1)`, already implemented in `PositionManager`/`ExitEngine`, currently used unmodified by `src/backtest/`). Rule 2 gives one target; this describes multiple sequential targets as price moves favorably. **Open question, do not assume equivalence:** is this ladder a description of Trailing Stop behavior (moving the exit point as each successive level is passed) applied to the target side, or a genuinely different, additional targeting rule Rule 2 doesn't capture? Needs to be asked directly rather than guessed.
 
 **Counter Example for this day, if any** (a moment the same day where the pattern did *not* hold, or UNKNOWN):
 
