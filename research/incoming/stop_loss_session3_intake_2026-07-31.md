@@ -6,7 +6,13 @@
 
 **Do not fill in a field with a guess.** If the Product Owner doesn't know or isn't sure, write `UNKNOWN` — an honest "I don't know" is usable input to the intake process; a guessed value is not (it will be classified as an Assumption, not a Confirmed Rule, per `EVIDENCE_INTAKE_PROCESS.md` Section 2).
 
-**Partial evidence already landed (2026-08-01), cross-referenced here, not duplicated:** `research/incoming/qualification_session1_intake_2026-07-31.md`'s "Entry/Target/SL/TSL Clarification" section records the Product Owner's first-ever SL statement: **SL = S-1, the marked level one rung below entry** (S = the entry's own marked level on the 13-level ladder). This numerically coincides with both the already-confirmed Rule 2 "Support" level (`CE(S-1)`/`PE(S+1)`) and the Competitor Exit trigger described in the same section — **not yet confirmed whether SL/Support/Competitor Exit are three names for one price level with different trigger conditions, or three genuinely distinct things.** This session's worked examples below are still the right place to nail that down with real dated trades, rather than leaving it as an inference from one general statement.
+**Partial evidence already landed (2026-08-01), cross-referenced here, not duplicated:** `research/incoming/qualification_session1_intake_2026-07-31.md`'s "Entry/Target/SL/TSL Clarification" section records the Product Owner's first-ever SL statement: **SL = S-1, the marked level one rung below entry** (S = the entry's own marked level on the 13-level ladder).
+
+**Analysis (2026-08-01), using only already-confirmed code, no new evidence requested for this step:** `src/position_manager/position_manager.py`'s already-confirmed Rule 2 implementation distinguishes Support from Competitor Exit **by side, not just strike position** — for a CE trade at strike S: `Target = CE(S+1)`, `Support = CE(S-1)` (same side as the trade), `Competitor Exit = PE(S-1)` (opposite side, same strike-position). Both Support and Competitor Exit sit at "the S-1 rung," but are two different premiums (own contract vs. opposite contract).
+
+An SL is naturally expressed on the trader's *own* position's premium — exactly what Support already is. **The most consistent reading: SL = Support = `CE(S-1)`/`PE(S+1)`, the same-side level — not the opposite-side Competitor Exit level.** Under this reading, SL isn't a new, third concept; it's the already-confirmed Support level under a name the earlier evidence hadn't yet connected to it. Competitor Exit remains genuinely distinct (opposite side).
+
+**This is a strong inference from consistent naming, not something the Product Owner has confirmed outright.** Treat "SL = Support" as a hypothesis to explicitly confirm, not a settled fact, until the Product Owner says so directly or a worked example demonstrates it (e.g. a trade where the SL price and the already-known Support price are shown to be numerically identical).
 
 ---
 
