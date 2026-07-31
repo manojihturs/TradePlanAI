@@ -16,6 +16,61 @@ For each day, capture enough raw detail that someone with no memory of the conve
 
 ---
 
+## General Rule Statement (Product Owner, supplied in chat, 2026-07-31)
+
+**Status of this section: a conceptual rule statement, not yet a dated Worked Example.** Recorded verbatim per `EVIDENCE_INTAKE_PROCESS.md`'s "quoted verbatim, nothing paraphrased away" rule. This does **not** by itself satisfy the "minimum three worked examples" acceptance bar (`evidence_acceptance_checklist.md`) — no specific date/trade/outcome was walked through, only the general shape of the rule. Worked Examples 1-5 below are still needed with real dated instances before this can move to Implement.
+
+**Verbatim statement:**
+
+> After 9.20AM candle you have to find the top and bottom strike. Then finalize which strike you want to proceed either top or bottom, if possible keep both.
+>
+> Top Instructions: Mark the top premium price (First 5 minute). CE - Mark PE Low (PE TOP Low price and 6ITM and OTM First 5 minute value) - These levels act as Entry, Target, SL, Support, Resistance. PE - Mark CE High (CE TOP High price and 6ITM and OTM First 5 minute value) - These levels act as Entry, Target, SL, Support, Resistance.
+>
+> Bottom Instructions: Mark the Bottom premium price (First 5 minute). CE - Mark PE High (PE Bottom High price and 6ITM and OTM First 5 minute value) - These levels act as Entry, Target, SL, Support, Resistance. PE - Mark CE Low (CE Bottom Low price and 6ITM and OTM First 5 minute value) - These levels act as Entry, Target, SL, Support, Resistance.
+>
+> Then find who is going to win - Based on the market trend.
+>
+> Now the game starts. If you found the confident trade then its entry point act as a support choose the first resistance as R1 target - this will go upward direction. Meanwhile watch the competitor movement who will going to touch the line first - must go to downward and looks for the next support. When anyone touches the line the trade should exit immediately - means its profit trade.
+>
+> STL - should be same as previously told (Need 3 points to cover the exchange fee and taxes).
+
+**Cross-check against existing confirmed evidence (per `EVIDENCE_INTAKE_PROCESS.md` Section 4):**
+
+| Statement | Cross-check result |
+|---|---|
+| "Choose the first resistance as R1 target" (adjacent strike, direction of trade) | **CONFIRMS EXISTING** — matches Specification Rule 2 (v1.1, CONFIRMED), already implemented in `src/position_manager/position_manager.py` |
+| "Watch the competitor... exit immediately when touched" | **CONFIRMS EXISTING** — matches Rule 2's Competitor Exit mapping, already implemented in `src/exit_engine/exit_engine.py` |
+| "STL... 3 points to cover exchange fee and taxes" | **CONFIRMS EXISTING** — matches the already-confirmed Trailing Stop minimum net quoted in `STRATEGY_FUNCTIONAL_SPECIFICATION.md:246` |
+| "CE - Mark PE Low (Top)"; "PE - Mark CE High (Top)"; "CE - Mark PE High (Bottom)"; "PE - Mark CE Low (Bottom)" | **NEW — directly answers QUAL-007.** Word-for-word structural match to `STRATEGY_FUNCTIONAL_SPECIFICATION.md` §7's TP High/TP Low sustain test (`CE > competitor PE Low`, `PE < competitor CE High`). Identifies the competitor as the **same strike's own opposite side** (Top or Bottom strike, opposite CE/PE), not the adjacent-strike Rule 2 mapping — the two concepts are now confirmed distinct, exactly as `BUSINESS_ARCHITECTURE.md` had warned they must not be conflated. |
+
+**Real reference ladder pulled for context** (NIFTY, 2026-07-30, Top Strike 24250, Bottom Strike 24200, first 5-minute CE/PE High/Low, all 13 strikes = the "6 ITM and OTM" the statement describes — fetched live via the Upstox backtest harness, `src/backtest/`):
+
+| Strike | CE High | CE Low | PE High | PE Low |
+|---|---|---|---|---|
+| 23950 | 332.95 | 276.10 | 46.80 | 32.65 |
+| 24000 | 291.50 | 236.60 | 63.00 | 41.10 |
+| 24050 | 252.00 | 201.85 | 72.90 | 51.50 |
+| 24100 | 215.60 | 167.60 | 91.00 | 64.30 |
+| 24150 | 181.40 | 137.55 | 108.20 | 80.00 |
+| 24200 (Bottom) | 150.00 | 110.30 | 131.60 | 98.30 |
+| 24250 (Top) | 121.50 | 87.00 | 159.00 | 120.10 |
+| 24300 | 103.20 | 67.05 | 189.00 | 145.20 |
+| 24350 | 74.75 | 50.50 | 222.35 | 173.55 |
+| 24400 | 56.40 | 37.30 | 259.40 | 205.10 |
+| 24450 | 45.55 | 27.00 | 297.95 | 240.50 |
+| 24500 | 30.10 | 19.45 | 340.60 | 279.20 |
+| 24550 | 23.85 | 13.90 | 383.45 | 318.40 |
+
+Applying the rule to this table: a CE trade at Top (24250) would compare against **Top's own PE Low = 120.10**; a PE trade at Top against **Top's own CE High = 121.50**; a CE trade at Bottom (24200) against **Bottom's own PE High = 131.60**; a PE trade at Bottom against **Bottom's own CE Low = 110.30**. This is the confirmed 13-level ladder `ReferenceBuilder` already builds — no new data-capture logic needed if this rule is accepted, only a new comparison.
+
+**Open questions this statement does not yet resolve** (do not guess at these — ask the Product Owner directly):
+
+1. **Entry trigger order** — is the TP High/Low sustain test (this statement) a *gate* that must pass before a Winner (already-implemented `WinnerEngine`) becomes a real entry, or does Winner Detection alone still trigger entry with Qualification only describing the state afterward? "If you found the confident trade then its entry point act as a support" suggests Qualification comes first, but this isn't stated unambiguously enough to implement.
+2. **"These levels act as Entry, Target, SL, Support, Resistance"** — five roles for the same captured level. What determines which role a given level plays in a given moment?
+3. **No dated worked example yet** — a specific day, a specific strike, the actual PE Low/CE High values, and the actual qualify/don't-qualify outcome, so this can be independently recomputed the way Weekly Future was.
+
+---
+
 ## Worked Example 1
 
 **Date:** _______________
@@ -120,7 +175,7 @@ For each day, capture enough raw detail that someone with no memory of the conve
 - **Does the competitor change during replay** (i.e., within a single session, does which strike/level counts as "the competitor" ever shift), or is it fixed for the day? _______________
 - **Is there more than one competitor** — do TP High and TP Low use the same competitor, or different ones? _______________
 - **How is the competitor selected**, in the Product Owner's own words, as a general rule (not tied to one day)? _______________
-- **Is the competitor any of**: Weekly Future / Top Strike / Bottom Strike / Reference Level / Premium / ORB / the Exit-stage Rule 2 mapping (`PE(S-1)`/`CE(S+1)`) / something else entirely? _______________
+- **Is the competitor any of**: Weekly Future / Top Strike / Bottom Strike / Reference Level / Premium / ORB / the Exit-stage Rule 2 mapping (`PE(S-1)`/`CE(S+1)`) / something else entirely? **Per the General Rule Statement above: the same strike's own opposite side** — Top's PE Low (for CE)/CE High (for PE), Bottom's PE High (for CE)/CE Low (for PE). Distinct from the Exit-stage Rule 2 mapping. Still needs a dated Worked Example to move from "stated" to "Confirmed."
 
 ## Expected Result
 
