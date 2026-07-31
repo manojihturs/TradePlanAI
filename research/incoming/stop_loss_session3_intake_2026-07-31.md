@@ -6,6 +6,8 @@
 
 **Do not fill in a field with a guess.** If the Product Owner doesn't know or isn't sure, write `UNKNOWN` — an honest "I don't know" is usable input to the intake process; a guessed value is not (it will be classified as an Assumption, not a Confirmed Rule, per `EVIDENCE_INTAKE_PROCESS.md` Section 2).
 
+**Partial evidence already landed (2026-08-01), cross-referenced here, not duplicated:** `research/incoming/qualification_session1_intake_2026-07-31.md`'s "Entry/Target/SL/TSL Clarification" section records the Product Owner's first-ever SL statement: **SL = S-1, the marked level one rung below entry** (S = the entry's own marked level on the 13-level ladder). This numerically coincides with both the already-confirmed Rule 2 "Support" level (`CE(S-1)`/`PE(S+1)`) and the Competitor Exit trigger described in the same section — **not yet confirmed whether SL/Support/Competitor Exit are three names for one price level with different trigger conditions, or three genuinely distinct things.** This session's worked examples below are still the right place to nail that down with real dated trades, rather than leaving it as an inference from one general statement.
+
 ---
 
 ## Instructions for the session

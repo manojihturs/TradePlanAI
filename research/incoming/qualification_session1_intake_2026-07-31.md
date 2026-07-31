@@ -65,9 +65,10 @@ Applying the rule to this table: a CE trade at Top (24250) would compare against
 
 **Open questions this statement does not yet resolve** (do not guess at these — ask the Product Owner directly):
 
-1. ~~**Entry trigger order**~~ — **substantially answered by the Entry Trigger Rule section below** (2026-07-31, second message): the crossover condition *is* the entry trigger itself, checked continuously from 9:20 onward. Still open: exact relationship to the already-implemented `WinnerEngine` touch logic (see cross-check below).
-2. **"These levels act as Entry, Target, SL, Support, Resistance"** — five roles for the same captured level. The Entry Trigger Rule + 22 July Worked Example below clarify Entry and Target; SL/Support/Resistance roles still unclarified.
-3. ~~**No dated worked example yet**~~ — **now supplied**, see Worked Example 1 below (22 July, PE Buy). Still need 2 more independent dated examples per `evidence_acceptance_checklist.md`.
+1. ~~**Entry trigger order**~~ — **answered by the Entry/Target/SL/TSL Clarification section below** (2026-08-01): Winner Detection ("the winner guessing generator") *is* the entry trigger, gated by an underlying-trend pre-check, confirmed by the dual crossover. Still open: the ladder of levels checked is wider than what `WinnerEngine` currently implements (see that section's cross-check).
+2. ~~**"These levels act as Entry, Target, SL, Support, Resistance"**~~ — **answered by the 2026-08-01 clarification**: Entry = a marked level (S), Target = S+1 (next marked level up), Competitor Exit = touch of S-1, SL = S-1, TSL = min. 3 points, continuously trailing. SL and Competitor Exit appear to sit at the *same* level (S-1) but trigger off different conditions — flagged, not yet confirmed as intentional.
+3. ~~**No dated worked example yet**~~ — **now supplied**, see Worked Example 1 below (22 July, corrected to 4 sequential trades). Still need 2 more independent dated examples per `evidence_acceptance_checklist.md`.
+4. ~~**Competitor identity conflict** (same-strike vs adjacent-strike 24050/24000)~~ — **resolved by the 2026-08-01 clarification**: the competitor is *any* of the 13 marked levels, whichever is crossed first in the trend-confirmed direction — not fixed to one strike. 24050/24000 were simply the levels that happened to be crossed on 22-July's specific trades, not a separate competing rule.
 
 ---
 
@@ -91,6 +92,37 @@ Applying the rule to this table: a CE trade at Top (24250) would compare against
 |---|---|
 | Same-strike CE+PE dual touch, same candle, as the entry trigger | **Structurally similar to already-implemented `WinnerEngine`** (Rule 3, CONFIRMED: "If CE touches any of its reference levels AND PE touches any of its reference levels during the SAME candle... Winner immediately generates Entry Signal"). **Not yet confirmed identical** — `WinnerEngine` checks touch against *any* of a strike's own CE/PE High/Low band; this statement specifies a more precise cross pattern (PE crosses CE High specifically, CE crosses PE Low specifically) and ties it explicitly to "false breakout filter" framing that `WinnerEngine`'s existing docstring does not mention. **Open question, do not assume equivalence without asking:** is this the same event as Winner Detection under a different name, or a stricter refinement of it? |
 | ATM ± 4 ITM/OTM = 9 strikes | **Possible structural difference from the earlier General Rule Statement** (Top/Bottom, "6 ITM and OTM" = 13 strikes total across two anchors). **Open question, do not guess:** is ATM here the same concept as Top/Bottom Strike, or a third, distinct anchor point? Ask the Product Owner directly before assuming either way. |
+
+---
+
+## Entry/Target/SL/TSL Clarification (Product Owner, supplied in chat, 2026-08-01)
+
+**Status: resolves the competitor-identity conflict flagged above, and is the first real evidence for Session 3 (Stop Loss) and Session 4 (Trailing Stop).** Recorded verbatim (original wording), with an English restatement clearly marked as not the evidence of record.
+
+**Verbatim:**
+
+> Entry can happen at any level not the top and bottom strike. On 22nd the top strike is 24150, so we have to mark the 24150 +- 6 levels first 5mins High to 24150PE and Low to 24150CE. So now 24150 is ATM (Real ATM is different and its change time to time). The above should happen after 9.20AM. After 9.20AM the winner guessing generator starts and check who is going to win (CE/PE). First we have get the current market trend bullish/bearish (underlying), based on that we have to check the 24150CE and PE crossing any marked level - if the market seems bullish the 24150CE cross up any marked level same time the 24150PE cross down any marked level, this is the confirmation of CE entry trade and vice versa.
+>
+> Target/EXIT: Once enter the trade, the exit should be trade value (marked level S) and the target is s+1 (next up marked level), another exit based on the competitor touch the S-1 marked level. SL is trade taken mark -1 marked level. TSL is minimum 3 points from trade taken and keeps on travel.
+
+**English restatement (not the evidence of record):**
+- "24150" for 22-July is the **Top Strike**, but is here relabeled "ATM" for that session's purposes — explicitly **not** the real, continuously-moving ATM strike ("Real ATM is different and its changes time to time"). This resolves the earlier open question about whether "ATM ± 4/4" and "Top/Bottom" are the same concept: **they are** — "ATM" in the Entry Trigger Rule section above was this session's Top (or Bottom) Strike, fixed for the day, not the live ATM.
+- The 13-level ladder (anchor ± 6) is built exactly as the General Rule Statement described: each level's CE High is drawn on the anchor's own PE chart, each level's PE Low is drawn on the anchor's own CE chart (matches the screenshots in `daily_data_2026-07-31.md` exactly — e.g. "24050CE ITM3 | High: 238" drawn on a PE chart).
+- **Underlying trend is checked first** (bullish/bearish), before any crossover is evaluated — a pre-filter not previously recorded anywhere in this project's evidence.
+- The dual crossover is then checked **against any of the marked levels**, not one fixed strike — whichever level is crossed first, in the direction the trend already implied, confirms entry. **This directly resolves the competitor-identity conflict** noted in Worked Example 1: 24050 CE / 24000 CE were simply whichever marked levels got crossed on those specific 22-July trades, not a separate, fixed rule contradicting the same-strike Top/Bottom statement.
+- **Target = S+1**, the next marked level up from entry (S) — confirms, does not contradict, the correction already made to Worked Example 1 (single-step target per trade, not a multi-rung ladder within one trade).
+- **Competitor Exit = touch of S-1** — matches the shape of already-confirmed Rule 2's Competitor Exit concept, generalized here to "the marked-level ladder" rather than strictly "the adjacent strike."
+- **Stop Loss = S-1**, the same marked level as the Competitor Exit trigger above. **Not yet confirmed whether this is intentional** (SL and Competitor Exit sitting at the identical price, triggered by different conditions) or a simplification in this description — flagged, not assumed either way.
+- **Trailing Stop = minimum 3 points from entry, "keeps on travelling"** — confirms the already-known +3 net premium points rule (Session 4), and confirms, rather than merely infers, the pattern already noticed in the 22-July table (each new sequential trade's SL sitting at the previous trade's entry price) — this is a continuously-updating trail, not a one-time move.
+
+**Cross-check against already-implemented code:**
+
+| Statement | Cross-check result |
+|---|---|
+| Checking crossover against *any* of the 13 marked levels (not just the entry strike's own CE/PE High/Low band) | **Materially different from the currently-implemented `WinnerEngine`**, which only checks a single strike's own reference band. If accepted, `WinnerEngine`/`QualificationEngine` would need to check against the full ladder, not just one strike's levels — this is a real scope difference, not just a naming question. |
+| Target = S+1, Competitor Exit = S-1 (marked-level ladder, generalized) | **Consistent in shape with already-confirmed Rule 2** (`CE(S+1)`/`PE(S-1)` for Target, competitor mapping for Exit) — the generalization from strikes to marked levels is new, but the S+1/S-1 structure itself is not contradicted. |
+| Stop Loss = S-1 | **First-ever evidence for Stop Loss** (Session 3, previously zero evidence beyond "named as an exit condition"). Coincides numerically with Competitor Exit and with Rule 2's already-confirmed "Support" level (`CE(S-1)`/`PE(S+1)`) — **three named concepts (SL, Competitor Exit, Support) may collapse to the same price level under different trigger conditions; this needs explicit confirmation, not assumption.** |
+| TSL minimum 3 points, continuously trailing | **Confirms the already-accepted +3 net premium points rule** (Session 4). Activation trigger and step size are still not fully specified — "keeps on travelling" describes continuous behavior but not the exact increment. |
 
 ---
 

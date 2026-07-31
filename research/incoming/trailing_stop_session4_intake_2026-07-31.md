@@ -6,6 +6,8 @@
 
 **Do not fill in a field with a guess.** If the Product Owner doesn't know or isn't sure, write `UNKNOWN` — an honest "I don't know" is usable input to the intake process; a guessed value is not (it will be classified as an Assumption, not a Confirmed Rule, per `EVIDENCE_INTAKE_PROCESS.md` Section 2).
 
+**Partial evidence already landed (2026-08-01), cross-referenced here, not duplicated:** `research/incoming/qualification_session1_intake_2026-07-31.md`'s "Entry/Target/SL/TSL Clarification" section confirms the already-known +3 net premium points minimum, and adds "keeps on travel" — i.e. a continuously-updating trail, not a one-time move. The same document's corrected 22-July Worked Example shows a concrete numeric pattern consistent with this: each sequential re-entry trade's SL sits exactly at the previous trade's own entry price. **Still missing, and this session's worked examples below are the right place to confirm:** the exact activation trigger, the step size/increment each time the trail moves, and the brokerage/exchange/tax figures needed to compute "+3 net" precisely.
+
 ---
 
 ## Instructions for the session
