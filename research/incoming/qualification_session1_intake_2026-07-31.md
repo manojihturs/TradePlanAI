@@ -96,30 +96,40 @@ Applying the rule to this table: a CE trade at Top (24250) would compare against
 
 ## Worked Example 1
 
-**Date:** 22 July (year not stated in the message — context suggests 2026, given NIFTY spot ≈24140 is consistent with the 2026-07-30 session already fetched via Upstox; **please confirm the exact year/date before this is treated as fully specified**).
-**Strike(s) involved:** Entry strike 24150 PE. Competitor strike 24150 CE (same strike, opposite side).
+**Date:** 22 July (year not stated — context suggests 2026, consistent with everything else fetched this session; **please confirm the exact year before this is treated as fully specified**).
+**Strike(s) involved:** 24150 (Top or Bottom not restated here — the same strike used throughout Trades 1, 2, 4; Trade 3 uses 24000).
+
+**CORRECTION to this document's earlier recording of this day:** originally recorded as one PE trade with two sequential Targets (206.35 → 238.75 → 269.95). The Product Owner's full trade-log table (below) shows this was **four separate, sequential trades**, each re-entering at the level the previous one exited — not one trade with a multi-rung ladder target. Rule 2's single-fixed-Target design is **not contradicted** by this data; each individual trade still has exactly one Target.
+
+**Full trade-log table, recorded verbatim as tab-separated by the Product Owner (column headers as given — see alignment note below):**
+
+```
+22-July-2026  Entry time  Price   Target  SL      TSL          CE/PE  Entry Premium  Competitor Strike  Competitor Price  Exit time  Exit price  Captured points  Total  Entry reason                                              Exit Reason
+24150         9.25        206.35  238.75  176.85  You can fix  PE     24050CE High   24050PE Low        114               9.45       238.75      32.4              2106   PE crossed 24050CE high and same time CE crosses 24050PE low  Target hit as well as Competitor Support line hit
+              10.2        238.75  269.95  206.35  You can fix  PE     24000CE High   24000PE Low        94.4              10.25      269.95      31.2              2028   PE crossed 24000CE high and same time CE crosses 24000PE low  Target hit first and Competitor line not hit
+              10.5        94.4    114     78.2                 CE     24000PE Low    24000CE High       238.75            11.3       101.6       7.2               468    CE crossed 24000PE Low and same time PE crosses 24000CE High  CE Resistance hit first
+              12          238.75  269.95  206.35  You can fix  PE     24000CE High   24000PE Low        94.4              12.2       269.95      31.2              2028   PE crossed 24000CE high and same time CE crosses 24000PE low  Target hit first and Competitor line hit
+```
+
+**Column-alignment note — UNCONFIRMED, do not treat as settled:** the header names "Entry Premium" / "Competitor Strike" / "Competitor Price" do not cleanly match their column's values (e.g. row 1's "Entry Premium" cell holds the text `24050CE High`, a level *label*, not a premium number). My best-guess reading, **not confirmed by the Product Owner:** the two label cells (`24050CE High`, `24050PE Low`) together identify the dual-crossover reference pair from the Entry Trigger Rule above (matching the Entry reason text exactly), and the adjacent numeric cell (114, 94.4, 238.75, 94.4) is the Competitor Price at entry. Please confirm this reading rather than let it stand as assumed.
 
 1. **Why was this trade qualified?**
-   Per the Entry Trigger Rule above: PE premium crossed the competitor's (24150 CE) High/Low band at the same instant CE premium crossed the same strike's PE Low/High band — the "dual crossover, false breakout filter" condition. Exact crossed values (which specific High vs Low triggered) were not itemized separately from the Entry price below — **UNKNOWN at this level of detail; would need to ask the Product Owner to point to the exact two numbers crossed at 206.35.**
+   Per the Entry Trigger Rule (Entry reason column, verbatim): Trade 1 — "PE crossed 24050CE high and same time CE crosses 24050PE low." Trade 3 (the CE trade) — "CE crossed 24000PE Low and same time PE crosses 24000CE High." Both match the simultaneous dual-crossover condition already recorded above.
 
 2. **Which competitor was compared?**
-   24150 CE (same strike, opposite side) — consistent with both the General Rule Statement above (Top/Bottom same-strike-opposite-side) and the Entry Trigger Rule (same-strike CE/PE dual cross).
+   Trades 1/2/4 (PE side): 24050 CE and 24000 CE respectively — **not 24150 CE (same strike)** as the General Rule Statement's Top/Bottom framing would suggest. This is the **adjacent-strike-style reference** (24050, 24000 — both below the 24150 entry strike, moving further away as each successive trade re-enters), closer in shape to Rule 2's adjacent-strike pattern than to the "same strike opposite side" pattern from the General Rule Statement. **This is a real, material inconsistency between two parts of this document's own evidence, recorded here rather than resolved by guessing.**
 
 3. **Why this competitor?**
-   Not stated separately from the general rule above (same strike's opposite side, by the stated rule itself) — **UNKNOWN whether there was day-specific reasoning beyond applying the general rule.**
+   Not stated independently of the crossover condition itself — **UNKNOWN** whether 24050/24000 were chosen because they were "the next rung down" mechanically, or for some other stated reason.
 
 4. **Would another competitor have changed the result?**
-   **UNKNOWN — not asked/answered yet.** Worth asking directly: would the adjacent-strike Rule 2 mapping (`PE(S-1)`/`CE(S+1)` = 24100 CE for this PE trade) have produced a different qualification outcome on this same candle?
+   **UNKNOWN — not asked.**
 
-**Raw supporting data:**
+**Raw supporting data:** the full table above. Additional internally-consistent finding: **`Total` = `Captured points` × 65, exactly, on all four rows** (32.4×65=2106, 31.2×65=2028, 7.2×65=468, 31.2×65=2028) — a real, self-verifying number pulled from the data itself, not an assumption. Possibly the lot size in use, not yet confirmed as such by the Product Owner.
 
-- Entry: **206.35**
-- Target 1: **238.75**
-- Target 2: **269.95**
-- Pattern stated: "Entry line → Next CE High → Next CE High → Next CE High" — i.e. the ladder target sequence walks up through successive CE High values on the (competitor-side) ladder, one rung per target, not a single fixed Target.
-- NIFTY Spot at the time: 24140 (from the introductory example in the same message — not explicitly re-stated for this exact 22 July trade, **please confirm this spot value belongs to this specific trade**).
+**Candidate Trailing-Stop/SL mechanism observed (Session 3/4 relevant, inference only, not confirmed):** Trade 2's SL (206.35) exactly equals Trade 1's own Entry price, and Trade 4's SL (206.35) matches the same value. This looks like "the stop trails up to lock in the previous trade's entry level as each successive trade opens" — a real candidate answer to Session 4's open trail-mechanics question, but this is read out of the numbers, not stated outright by the Product Owner, and should be confirmed directly rather than assumed.
 
-**Cross-check against already-implemented Target logic:** this "ladder of successive Next CE Highs" is **structurally different from Rule 2's single fixed Target** (`CE(S+1)`/`PE(S-1)`, already implemented in `PositionManager`/`ExitEngine`, currently used unmodified by `src/backtest/`). Rule 2 gives one target; this describes multiple sequential targets as price moves favorably. **Open question, do not assume equivalence:** is this ladder a description of Trailing Stop behavior (moving the exit point as each successive level is passed) applied to the target side, or a genuinely different, additional targeting rule Rule 2 doesn't capture? Needs to be asked directly rather than guessed.
+**A third exit type found, beyond Target/SL/Competitor:** Trade 3 exited via "CE Resistance hit first" at 101.6 — between its SL (78.2) and Target (114), not equal to either. This is consistent with the R1/R2 resistance labels seen drawn directly on the TradingView screenshots in `research/incoming/daily_data_2026-07-31.md`, and suggests the real exit-condition set may be larger than the four conditions (Target/Competitor/SL/Trailing Stop) currently coded into `ExitEngine`. **Open question, not yet answered:** what exactly is a "Resistance" level as distinct from Target, and when does it apply instead of Target?
 
 **Counter Example for this day, if any** (a moment the same day where the pattern did *not* hold, or UNKNOWN):
 
