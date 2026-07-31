@@ -28,6 +28,8 @@ from models.market_snapshot import MarketSnapshot
 from models.orb_result import ORBResult
 from models.reference_level import ReferenceLevel
 from models.strike import StrikeSelection
+from models.strike_chain_snapshot import StrikeChainSnapshot
+from models.trade_position import TradePosition
 from models.weekly_future import WeeklyFuture
 
 
@@ -64,6 +66,15 @@ class PipelineContext:
             docstring.
         qualification_state: Qualification Engine's output.
         winner: The detected Winner, if any this cycle.
+        chain_snapshot: Every strike's CE/PE
+            :class:`~models.market_snapshot.MarketSnapshot` pair for
+            *this* candle timestamp only (not accumulated) - the
+            option-chain-shaped data ``business.stages.winner_stage.WinnerStage``
+            and ``business.stages.exit_stage.ExitStage`` read from,
+            since both need a specific strike's CE+PE simultaneously,
+            unlike ``candles`` (one anchor strike/side, accumulated).
+        exited_position: The position closed this candle, if
+            ``business.stages.exit_stage.ExitStage`` closed one.
         diagnostics: Free-text notes accumulated by stages themselves
             (distinct from :class:`~business.business_result.BusinessResult`'s
             own pipeline-level diagnostics).
@@ -80,6 +91,8 @@ class PipelineContext:
     tp_state: object | None = None
     qualification_state: object | None = None
     winner: WinnerDetectedEvent | None = None
+    chain_snapshot: tuple[StrikeChainSnapshot, ...] = field(default_factory=tuple)
+    exited_position: TradePosition | None = None
     diagnostics: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
@@ -121,3 +134,11 @@ class PipelineContext:
 
     def with_winner(self, winner: WinnerDetectedEvent) -> PipelineContext:
         return replace(self, winner=winner)
+
+    def with_chain_snapshot(
+        self, chain_snapshot: tuple[StrikeChainSnapshot, ...]
+    ) -> PipelineContext:
+        return replace(self, chain_snapshot=chain_snapshot)
+
+    def with_exited_position(self, exited_position: TradePosition) -> PipelineContext:
+        return replace(self, exited_position=exited_position)

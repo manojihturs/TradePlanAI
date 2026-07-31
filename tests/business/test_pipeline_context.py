@@ -9,13 +9,15 @@ from decimal import Decimal
 import pytest
 
 from business.pipeline_context import PipelineContext
-from core.enums import EventPriority, OptionType, ORBStatus, TradeDirection
+from core.enums import EventPriority, ExitReason, OptionType, ORBStatus, TradeDirection
 from core.events import WinnerDetectedEvent
 from core.exceptions import ValidationError
 from models.market_snapshot import MarketSnapshot
 from models.orb_result import ORBResult
 from models.reference_level import ReferenceLevel
 from models.strike import StrikeSelection
+from models.strike_chain_snapshot import StrikeChainSnapshot
+from models.trade_position import TradePosition
 from models.weekly_future import WeeklyFuture
 
 
@@ -40,6 +42,8 @@ class TestConstruction:
         assert context.tp_state is None
         assert context.qualification_state is None
         assert context.winner is None
+        assert context.chain_snapshot == ()
+        assert context.exited_position is None
         assert context.diagnostics == ()
 
     def test_none_session_id_raises(self) -> None:
@@ -156,3 +160,26 @@ class TestWithMethods:
         context = _context().with_winner(winner)
 
         assert context.winner is winner
+
+    def test_with_chain_snapshot(self) -> None:
+        snapshot = MarketSnapshot(timestamp=_ts(), underlying_price=Decimal(100))
+        pair = StrikeChainSnapshot(strike=Decimal(24000), ce=snapshot, pe=snapshot)
+
+        context = _context().with_chain_snapshot((pair,))
+
+        assert context.chain_snapshot == (pair,)
+
+    def test_with_exited_position(self) -> None:
+        position = TradePosition(
+            trade_id=uuid.uuid4(),
+            entry_strike=Decimal(24000),
+            entry_side=TradeDirection.CE,
+            target_level=Decimal(24050),
+            support_level=Decimal(23950),
+            competitor_monitor_strike=Decimal(23950),
+            opened_at=_ts(),
+        ).close(ExitReason.TARGET_HIT, _ts())
+
+        context = _context().with_exited_position(position)
+
+        assert context.exited_position is position
