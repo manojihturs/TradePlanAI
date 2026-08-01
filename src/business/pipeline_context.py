@@ -22,10 +22,12 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal
 
+from core.enums import TrendDirection
 from core.events import WinnerDetectedEvent
 from core.exceptions import ValidationError
 from models.market_snapshot import MarketSnapshot
 from models.orb_result import ORBResult
+from models.qualified_position import QualifiedPosition
 from models.reference_level import ReferenceLevel
 from models.strike import StrikeSelection
 from models.strike_chain_snapshot import StrikeChainSnapshot
@@ -75,6 +77,25 @@ class PipelineContext:
             unlike ``candles`` (one anchor strike/side, accumulated).
         exited_position: The position closed this candle, if
             ``business.stages.exit_stage.ExitStage`` closed one.
+        trend: The underlying's directional bias for this candle,
+            added Sprint 11 for
+            ``business.stages.qualification_stage.QualificationStage``.
+            Externally supplied - how trend itself is computed
+            remains UNRESOLVED (see
+            ``core.enums.TrendDirection``'s own docstring); this
+            field exists purely so a caller who *does* have a trend
+            value can feed it into the qualification pipeline, not to
+            imply this package computes it.
+        qualified_position: The
+            :class:`~models.qualified_position.QualifiedPosition`
+            opened this candle, if
+            ``business.stages.qualification_stage.QualificationStage``
+            opened one (Sprint 11, QUAL-007 resolved).
+        qualification_exited_position: The
+            :class:`~models.qualified_position.QualifiedPosition`
+            closed this candle, if
+            ``business.stages.qualification_exit_stage.QualificationExitStage``
+            closed one (Sprint 11).
         diagnostics: Free-text notes accumulated by stages themselves
             (distinct from :class:`~business.business_result.BusinessResult`'s
             own pipeline-level diagnostics).
@@ -93,6 +114,9 @@ class PipelineContext:
     winner: WinnerDetectedEvent | None = None
     chain_snapshot: tuple[StrikeChainSnapshot, ...] = field(default_factory=tuple)
     exited_position: TradePosition | None = None
+    trend: TrendDirection | None = None
+    qualified_position: QualifiedPosition | None = None
+    qualification_exited_position: QualifiedPosition | None = None
     diagnostics: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
@@ -142,3 +166,14 @@ class PipelineContext:
 
     def with_exited_position(self, exited_position: TradePosition) -> PipelineContext:
         return replace(self, exited_position=exited_position)
+
+    def with_trend(self, trend: TrendDirection) -> PipelineContext:
+        return replace(self, trend=trend)
+
+    def with_qualified_position(self, qualified_position: QualifiedPosition) -> PipelineContext:
+        return replace(self, qualified_position=qualified_position)
+
+    def with_qualification_exited_position(
+        self, qualification_exited_position: QualifiedPosition
+    ) -> PipelineContext:
+        return replace(self, qualification_exited_position=qualification_exited_position)

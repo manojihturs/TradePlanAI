@@ -9,11 +9,20 @@ from decimal import Decimal
 import pytest
 
 from business.pipeline_context import PipelineContext
-from core.enums import EventPriority, ExitReason, OptionType, ORBStatus, TradeDirection
+from core.enums import (
+    AnchorRole,
+    EventPriority,
+    ExitReason,
+    OptionType,
+    ORBStatus,
+    TradeDirection,
+    TrendDirection,
+)
 from core.events import WinnerDetectedEvent
 from core.exceptions import ValidationError
 from models.market_snapshot import MarketSnapshot
 from models.orb_result import ORBResult
+from models.qualified_position import QualifiedPosition
 from models.reference_level import ReferenceLevel
 from models.strike import StrikeSelection
 from models.strike_chain_snapshot import StrikeChainSnapshot
@@ -44,6 +53,9 @@ class TestConstruction:
         assert context.winner is None
         assert context.chain_snapshot == ()
         assert context.exited_position is None
+        assert context.trend is None
+        assert context.qualified_position is None
+        assert context.qualification_exited_position is None
         assert context.diagnostics == ()
 
     def test_none_session_id_raises(self) -> None:
@@ -183,3 +195,42 @@ class TestWithMethods:
         context = _context().with_exited_position(position)
 
         assert context.exited_position is position
+
+    def test_with_trend(self) -> None:
+        context = _context().with_trend(TrendDirection.BULLISH)
+
+        assert context.trend is TrendDirection.BULLISH
+
+    def test_with_qualified_position(self) -> None:
+        position = QualifiedPosition(
+            position_id=uuid.uuid4(),
+            anchor_role=AnchorRole.TOP,
+            side=TradeDirection.CE,
+            entry_strike=Decimal(24250),
+            entry_level=Decimal("120.1"),
+            target_level=Decimal("145.2"),
+            stop_loss_level=Decimal("98.3"),
+            competitor_exit_level=Decimal("121.5"),
+            opened_at=_ts(),
+        )
+
+        context = _context().with_qualified_position(position)
+
+        assert context.qualified_position is position
+
+    def test_with_qualification_exited_position(self) -> None:
+        position = QualifiedPosition(
+            position_id=uuid.uuid4(),
+            anchor_role=AnchorRole.TOP,
+            side=TradeDirection.CE,
+            entry_strike=Decimal(24250),
+            entry_level=Decimal("120.1"),
+            target_level=Decimal("145.2"),
+            stop_loss_level=Decimal("98.3"),
+            competitor_exit_level=Decimal("121.5"),
+            opened_at=_ts(),
+        ).close(ExitReason.TARGET_HIT, _ts())
+
+        context = _context().with_qualification_exited_position(position)
+
+        assert context.qualification_exited_position is position
