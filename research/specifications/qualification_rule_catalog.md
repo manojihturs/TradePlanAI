@@ -6,21 +6,21 @@
 
 ### QUAL-001 — TP High Sustain Test
 
-- **Description:** Top Strike's TP qualifies as "TP High" while its CE price remains above the competitor's PE Low, and its PE price remains below the competitor's CE High.
-- **Inputs:** Top Strike's own current CE price, current PE price; competitor's PE Low, competitor's CE High.
-- **Outputs:** A qualification state (shape undecided — see QUAL-006).
-- **Dependencies:** Strike Selection (Top Strike, already resolved); the competitor's identity (unresolved — see Gap Analysis).
-- **Evidence source:** `research/specification/STRATEGY_FUNCTIONAL_SPECIFICATION.md` §7.
-- **Confidence:** HIGH (logical form) / the rule as a whole is not implementable without QUAL-006/QUAL-007.
+- **Status: CONFIRMED (2026-08-01)** — see `qualification_engine_scoring_2026-08-01.md`, Evidence Complete verdict.
+- **Description:** Top Strike qualifies while its own CE and PE premiums cross a marked level anywhere on the wider 13-level ladder (anchor ± 6), in the direction confirmed by the underlying trend, simultaneously (CE crosses a PE-derived level, PE crosses a CE-derived level).
+- **Inputs:** Top Strike's own current CE price, current PE price; the wider marked-level ladder (CE High/PE Low per level for the Top-anchored roles); underlying trend direction.
+- **Outputs:** Entry confirmation (side, entry level S), Target (S+1), Competitor Exit trigger (touch of S-1), Stop Loss (S-1 same side).
+- **Dependencies:** Strike Selection (Top Strike, already resolved); the marked-level ladder (`ReferenceBuilder`, already implemented).
+- **Evidence source:** `research/incoming/qualification_session1_intake_2026-07-31.md` (General Rule Statement, Entry Trigger Rule, Entry/Target/SL/TSL Clarification, 4 dated worked examples, 16 trade rows).
+- **Confidence:** HIGH — Evidence Complete, 6/6 `evidence_acceptance_checklist.md` items pass.
 
 ### QUAL-002 — TP Low Sustain Test
 
-- **Description:** Bottom Strike's TP qualifies as "TP Low" while its CE price remains above the competitor's PE High, and its PE price remains below the competitor's CE Low. Mirrors QUAL-001.
-- **Inputs:** Bottom Strike's own current CE price, current PE price; competitor's PE High, competitor's CE Low.
-- **Outputs:** A qualification state (shape undecided — see QUAL-006).
-- **Dependencies:** Strike Selection (Bottom Strike, already resolved); the competitor's identity (unresolved).
-- **Evidence source:** `research/specification/STRATEGY_FUNCTIONAL_SPECIFICATION.md` §7.
-- **Confidence:** HIGH (logical form) / not implementable without QUAL-006/QUAL-007.
+- **Status: CONFIRMED (2026-08-01)** — mirrors QUAL-001, same evidence base.
+- **Description:** Bottom Strike qualifies under the mirrored mapping (CE↔PE High, PE↔CE Low), same crossing/trend/ladder mechanism as QUAL-001.
+- **Inputs/Outputs/Dependencies:** Same shape as QUAL-001, mirrored to the Bottom anchor.
+- **Evidence source:** Same as QUAL-001.
+- **Confidence:** HIGH — Evidence Complete.
 
 ### QUAL-003 — Qualification Is Current-State, Not Predictive
 
@@ -58,14 +58,15 @@
 - **Evidence source:** `research/specification/STRATEGY_FUNCTIONAL_SPECIFICATION.md` §8; `BUSINESS_WORKFLOW_SPECIFICATION.md` Stage 6.
 - **Confidence:** UNKNOWN (explicitly an open question in both source documents, not a stated rule either way).
 
-### QUAL-007 — Competitor Identity for the Sustain Test (BLOCKING)
+### QUAL-007 — Competitor Identity for the Sustain Test — RESOLVED (2026-08-01)
 
-- **Description:** QUAL-001/QUAL-002 require a "competitor" strike/level, but the only confirmed competitor mapping in this project (`STRATEGY_FUNCTIONAL_SPECIFICATION.md` Rule 2) is explicitly scoped to a **Winner's entry strike** for the **Exit Engine** (`PE(S-1)`/`CE(S+1)`) — a different, post-Winner stage. The specification explicitly warns against assuming this Exit-stage pattern also defines the pre-Winner TP competitor.
-- **Inputs:** N/A — this is the missing input itself.
-- **Outputs:** N/A.
-- **Dependencies:** Blocks QUAL-001 and QUAL-002 entirely; nothing in this catalogue can be implemented while this is unresolved.
-- **Evidence source:** `research/specification/STRATEGY_FUNCTIONAL_SPECIFICATION.md` §7 MISSING INFORMATION note; `research/specifications/QUALIFICATION_ENGINE_EVIDENCE_REQUIREMENTS.md` §2.
-- **Confidence:** N/A (this rule *is* the gap, not a stated rule).
+- **Status: CONFIRMED, no longer BLOCKING.** The project's longest-standing blocker. Resolved through a Product Owner evidence session (`research/incoming/qualification_session1_intake_2026-07-31.md`), formally scored Evidence Complete in `qualification_engine_scoring_2026-08-01.md`.
+- **Description:** The competitor for QUAL-001/QUAL-002's sustain test is **any marked level on the wider 13-level ladder** (anchor Top/Bottom ± 6 strikes), not a fixed single strike — confirmed by a real example (30-July-2026, 24250-TOP Row 1 vs Row 2) where the entry level and competitor level belonged to different strikes within the same trade. This is confirmed **distinct** from the already-implemented Exit-stage Rule 2 competitor (`PE(S-1)`/`CE(S+1)`, adjacent strike) — the specification's original warning not to conflate the two was correct; they are genuinely different mechanisms, not the same one under different names.
+- **Inputs:** The full marked-level ladder (already built by `ReferenceBuilder`, unchanged); Top's/Bottom's own CE/PE premiums (the only streams watched); underlying trend direction (new input, not previously modeled anywhere in `src/`).
+- **Outputs:** Which specific ladder level was crossed (the "S" position), used to derive Target (S+1) and Competitor Exit trigger (touch of S-1).
+- **Dependencies:** No longer blocks QUAL-001/QUAL-002 — this rule now unblocks them.
+- **Evidence source:** `research/incoming/qualification_session1_intake_2026-07-31.md` (General Rule Statement, Entry Trigger Rule, Entry/Target/SL/TSL Clarification, 4 dated worked examples); `research/incoming/daily_data_2026-07-31.md`.
+- **Confidence:** HIGH — Evidence Complete, 6/6 checklist items pass.
 
 ### QUAL-008 — Qualification → Winner Detection Dependency (Process Question)
 
@@ -94,13 +95,25 @@
 - **Evidence source:** `docs/TERMINOLOGY.md`, "Edge (Edge Detection)".
 - **Confidence:** MEDIUM for the concept's existence; **UNKNOWN** for "well below" itself — "not yet quantified (no fixed distance, percentage, or threshold established)."
 
+### QUAL-011 — End-of-Session Forced Close ("Market Closed, No Level Touched")
+
+- **Status: CONFIRMED as a real, real event; DESIGN DECISION made on where it lives (not itself new business-rule evidence).**
+- **Description:** A trade still open when the trading session ends is closed at whatever price is current, having never hit Target/Competitor/SL/TSL. Found repeatedly in the 29/30-July trade logs (`qualification_session1_intake_2026-07-31.md`, Worked Examples 2-3), exit reason recorded verbatim as "market closed (No level touched)."
+- **Design decision (2026-08-01):** implemented as **session-boundary orchestration**, not a fifth `ExitEngine` condition. `ExitEngine.evaluate()` is a pure per-candle check with no awareness of session start/end — none of its four existing conditions are time-based, and giving it a fifth, time-based one would be a different kind of concern bolted onto a currently-uniform interface. Instead, `BacktestRunner`/`ReplayRunner` (already session-scoped orchestrators) are responsible for forcing a close on any position still open after the last candle of the session — mirroring exactly how the harness already separates "engine scope" from "orchestration scope" for the `NeverTriggersStopLoss`/`NeverTriggersTrailingStop` null-objects.
+- **Inputs:** The position still open at the final candle; that candle's own price.
+- **Outputs:** A closed `TradePosition` with a new `ExitReason` (e.g. `SESSION_END`) distinct from the four already defined.
+- **Dependencies:** None on QUAL-001/002/007 — orthogonal to the qualification/entry rule itself, only relevant to how any trade (regardless of how it qualified) is guaranteed to close by end of day.
+- **Evidence source:** `research/incoming/qualification_session1_intake_2026-07-31.md`, Worked Examples 2 and 3 (4 occurrences across 2 days).
+- **Confidence:** HIGH that the event is real; this entry documents an implementation-scope decision, not a new business rule requiring further evidence.
+
 ---
 
 ## Rule Count
 
-**10 rules catalogued** (QUAL-001 through QUAL-010). Of these:
-- **2** are directly-implementable test *shapes* but blocked by a shared missing input (QUAL-001, QUAL-002 — blocked by QUAL-007).
+**11 rules catalogued** (QUAL-001 through QUAL-011). Of these:
+- **3 are CONFIRMED and now implementable**: QUAL-001, QUAL-002 (the sustain test itself), unblocked by QUAL-007 (also now CONFIRMED).
 - **1** is a confirmed, already-implementable rule independent of the rest (QUAL-009).
+- **1** is a scoped design decision, not new business-rule evidence (QUAL-011).
 - **7** are either genuine unresolved gaps (QUAL-006, QUAL-007, QUAL-008) or partially-evidenced supporting concepts with no operational threshold (QUAL-003, QUAL-004, QUAL-005, QUAL-010).
 
 No rule in this catalogue estimates a threshold, infers a missing identity, or assumes an unstated dependency — every "Dependencies"/"Description" field above traces directly to a quote in `qualification_evidence.md`.
