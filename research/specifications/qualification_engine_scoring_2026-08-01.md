@@ -16,35 +16,35 @@
 
 - [x] **Replay validation possible.** **PASS.** The rule's inputs (per-strike CE/PE candle data, a marked-level ladder) are exactly what `src/backtest/`'s existing Upstox connector and `ReferenceBuilder` already fetch and compute today — confirmed directly, not hypothetically, by the two live backtest runs already performed against 30-July-2026 real data this session.
 
-- [ ] **Counter example provided, or explicitly marked UNKNOWN.** **FAIL — genuine gap, not glossed over.** No Worked Example has an explicit "Counter Example" field filled in, not even as `UNKNOWN`. The underlying *substance* of counter-examples already exists in the data (SL-hit trades, "market closed, no level touched" trades — cases where Target was not simply hit cleanly), but per `evidence_submission_template.md`'s own rule, an unfilled field is incomplete regardless of what other data might imply it. This should be explicitly filled in, even if only pointing back to "row 1, 30-July, SL Hit" as the answer.
+- [x] **Counter example provided, or explicitly marked UNKNOWN.** **PASS (retroactively closed, 2026-08-01).** No Worked Example originally had an explicit "Counter Example" field filled in. Closed by formally labeling data already supplied, not by requesting anything new: 22-July's Trade 3 ("CE Resistance hit first" at 101.6, neither Target nor SL) is now recorded as Worked Example 1's Counter Example — a real instance where the standard Target/SL/Competitor pattern did not simply hold.
 
-- [~] **No unresolved `Unknown` on a required input or output.** **PARTIAL PASS — 1 of 2 Unknowns closed since this scoring was first run.** (1) **PE-side SL — RESOLVED (2026-08-01):** Product Owner confirmed "PE side same as CE, S+1" — `SL = PE(S+1)`, exactly matching the symmetric extension already predicted from Rule 2. Both sides are now Confirmed Rules. (2) The **`WinnerEngine` scope question** — whether entry crossover must be checked against the full 13-level marked ladder or only the entry strike's own reference band — remains open; the Product Owner already said this needs a worked example rather than a one-line answer.
+- [x] **No unresolved `Unknown` on a required input or output.** **PASS (2026-08-01).** Both remaining Unknowns closed: (1) PE-side SL confirmed ("PE side same as CE, S+1"). (2) The `WinnerEngine` scope question — resolved using a real example already in the data (30-July's 24250-TOP Row 1 vs Row 2, where Row 2's entry level came from a different strike than its competitor level) — Product Owner confirmed directly: **"yes, correct, use the wider ladder."** Also newly clarified: the premiums actually watched for crossing are only Top's and Bottom's own CE/PE (four streams), not all 13 strikes' own premiums — the wider ladder supplies the levels crossed, not the streams watched.
 
 ---
 
-## Score: 4.5 of 6 checked (1 explicit fail remains, concrete and fixable; the Counter Example item is small housekeeping)
+## Score: 6 of 6 checked
 
 ## Verdict
 
-**Evidence Partial — not yet Evidence Complete, but closer than the first pass.** Per `evidence_acceptance_checklist.md`'s own scoring rule, this is **not** yet an Implement outcome. Since this document was first written, the PE-side SL Unknown has closed — SL is now a fully Confirmed Rule on both sides. **Exactly one substantive item remains**, plus one small housekeeping item.
+**Evidence Complete.** Per `evidence_acceptance_checklist.md`'s own scoring rule ("All boxes checked → Evidence Complete → proceed to Approval"), the core Qualification/Entry/Target/Competitor Exit/Stop Loss rule now clears every item on the checklist. This is the first engine in this project (since Weekly Future) to reach this verdict through the full evidence framework built for exactly this purpose.
 
-## Targeted follow-up (Research, not Freeze)
+**The confirmed rule, stated precisely:**
+- Anchor: Top Strike and Bottom Strike (Weekly Future formula, already confirmed and implemented).
+- Ladder: for each anchor, capture the first-5-minute CE/PE High/Low across anchor ± 6 strikes (13 levels), with roles assigned per the General Rule Statement (Top: CE↔PE Low, PE↔CE High; Bottom: CE↔PE High, PE↔CE Low).
+- Watched premiums: only Top's own CE/PE and Bottom's own CE/PE — four streams, not all 13 strikes' own premiums.
+- Entry trigger: an underlying-trend pre-check, then a simultaneous dual crossover — the watched premium crosses a marked level from anywhere in the wider ladder (not fixed to the entry strike's own band), confirmed in the trend-implied direction.
+- Target = S+1 (the next marked level in the trade's direction); Competitor Exit = touch of S-1 (opposite side); Stop Loss = S-1 same side (`CE(S-1)`/`PE(S+1)`) — both sides confirmed.
+- Trailing Stop = minimum 3 points, step ratio 2 points of trail per 5 points of favorable premium movement (Session 4 — separately scored, still Evidence Partial pending activation trigger and cost figures).
 
-**The one remaining substantive item:**
-
-1. **The `WinnerEngine` scope question.** The next dated trade log should specifically note whether the crossover that triggered entry involved a level from the entry strike's own band, or a level from elsewhere in the wider ladder — ideally an example where the two would give different answers, to make the distinction unambiguous.
-
-**Small housekeeping, not a blocker to Evidence Complete once done:**
-
-2. Fill the Counter Example field explicitly in at least one Worked Example (pointing to an existing SL-hit or forced-close row is sufficient).
-3. Get the Product Owner's confirmation (or correction) on the minor 31-July strike-label mismatch (24300 vs 24350 in the prose vs. the Ref Label columns).
+**Implementation nuance worth flagging before Sprint 10, not a blocker to this verdict:** "S+1"/"S-1" here means the next/prior marked level *in the assigned ladder sequence*, which — per the 30-July Row 1/Row 2 example — can correspond to a different physical strike than simple adjacent-strike arithmetic would suggest, especially across sequential re-entries. This is more nuanced than Rule 2's fixed adjacent-strike model and should be designed deliberately, not assumed identical to Rule 2's mechanics.
 
 ## What this scoring does NOT cover
 
-- **Stop Loss as its own engine (Session 3):** **now Evidence Complete for the SL rule itself** — both sides Confirmed (`CE(S-1)`/`PE(S+1)`, exactly matching Rule 2's Support). No open Unknowns remain for the SL price/basis question specifically. Still worth a final scoring pass against `stop_loss_session3_intake_2026-07-31.md`'s own checklist before declaring the engine ready to implement, since SL is only one part of `ExitEngine`'s SL leg.
-- **Trailing Stop (Session 4):** the +3 minimum and the 5-points-in/2-points-of-trail step ratio are both stated, but the activation trigger and the brokerage/exchange/tax figures needed to compute "+3 net" precisely are still missing. Scored as **Evidence Partial**.
-- **The new "market closed (no level touched)" exit type** and the deferred "standard pivot points" (Resistance) concept are both real findings from this evidence, but neither has been scored against the checklist — they are new scope, not part of QUAL-007's original blocker, and should go through their own Request→Submission cycle if the Product Owner wants to pursue them (Resistance/pivot points was explicitly deferred; the forced-close exit type has not yet been discussed either way).
+- **Stop Loss as its own engine (Session 3):** Evidence Complete for the SL rule itself, same as reflected above — this is now folded into the Evidence Complete verdict for the core rule, since SL is part of it.
+- **Trailing Stop (Session 4):** still **Evidence Partial** — the +3 minimum and the 5-points-in/2-points-of-trail step ratio are stated, but the activation trigger and the brokerage/exchange/tax figures needed to compute "+3 net" precisely are still missing.
+- **The "market closed (no level touched)" exit type** and the deferred "standard pivot points" (Resistance) concept remain unscored — new scope beyond QUAL-007's original blocker. Pivot points explicitly deferred by the Product Owner; the forced-close exit type has not been discussed either way and should be a deliberate decision (model it as a fifth `ExitEngine` condition, or treat it as an operational/session-end concern outside the engine) before Sprint 10 designs around it.
+- **Two small, non-blocking loose ends**: explicit Product Owner confirmation on the minor 31-July strike-label mismatch (24300 vs 24350 in prose vs. Ref Label columns), and formal Rule ID bookkeeping in `docs/RULE_INDEX.md` (QUAL-007 exists; QUAL-001/002/010 and the new SL/TSL-specific IDs should be updated to reflect this verdict before implementation).
 
 ## Recommendation
 
-Do not start Sprint 10 (Qualification Engine implementation) yet. **One specific answer away** from a genuine Evidence Complete verdict for the core rule (the `WinnerEngine` scope question) — worth getting that answer, and filling the small housekeeping items, before writing any code.
+Per `product_owner_evidence_process.md`'s Decision Matrix, an Evidence Complete outcome proceeds to **Approval** — the user's explicit go-ahead — not an automatic unblock. **This scoring recommends Sprint 10 (Qualification Engine) becomes eligible to start**, contingent on: (1) the Product Owner's explicit approval to proceed, (2) a deliberate decision on the "market closed" exit type and the S+1/S-1-as-ladder-position implementation nuance noted above, and (3) updating `docs/RULE_INDEX.md`/`docs/GAP_ANALYSIS.md` to reflect QUAL-007's new status before writing code, per `evidence_traceability_standard.md`'s five-link chain.
