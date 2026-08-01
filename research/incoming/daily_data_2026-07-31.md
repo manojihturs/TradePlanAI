@@ -54,16 +54,13 @@ This is **independent confirmation** of `research/specifications/WEEKLY_FUTURE_F
 
 **Confirms the General Rule Statement recorded in `qualification_session1_intake_2026-07-31.md`:** Top strike's own CE High + PE Low, Bottom strike's own PE High + CE Low, are exactly the fields captured here — consistent with "CE - Mark PE Low (Top)" / "PE - Mark CE High (Top)" / etc.
 
-## Genuine discrepancy found — recorded, not resolved
+## Discrepancy — RESOLVED (2026-08-01, Product Owner confirmation)
 
-Screenshot `daily_data_screenshots_2026-07-31/29-07-2026_bottom_24150.png` (docx `image2.png`) labels a horizontal reference line on the 24150 chart pair as **"24150PE (ATM) | High: ₹137.3"** and **"24150CE (ATM) | Low: ₹141"**.
+Screenshot `daily_data_screenshots_2026-07-31/29-07-2026_bottom_24150.png` (docx `image2.png`) labels a horizontal reference line on the 24150 chart pair as **"24150PE (ATM) | High: ₹137.3"** and **"24150CE (ATM) | Low: ₹141"**, which did not match the docx table's Bottom row for 29-07-2026 (**PE High = 165.8**, **CE Low = 116**).
 
-This **does not match** the docx table's Bottom row for 29-07-2026, which states **PE High = 165.8** and **CE Low = 116** for strike 24150.
+**Product Owner confirmed directly: "this is the right one first 5min high and low" — referring to 165.8/116.** The docx table's values are the correct first-5-minute PE High/CE Low for strike 24150 on 29-07-2026. This is also independently supported by `qualification_session1_intake_2026-07-31.md`'s Worked Example 2: the 29-July trade log uses **165.8 as an actual trade Entry price**, consistent with it being the real, tradeable reference level.
 
-Per `EVIDENCE_INTAKE_PROCESS.md` Section 4: this is a `CONTRADICTS EXISTING`-shaped finding between two parts of the *same* submission, not resolved in favor of either value here. Possible explanations, **none confirmed:**
-- The screenshot shows a live/current price level at the moment of capture, not the frozen first-5-minute High/Low (the docx table's own row labels say "1st 5min High"/"1st 5min Low" explicitly; the screenshot's on-chart label does not specify a timeframe).
-- The two artifacts were captured at different times and the docx table's numbers supersede the screenshot, or vice versa.
-- A transcription error in one artifact.
+**The screenshot's 137.3/141 is not the first-5-minute band.** What it does represent is not fully settled — it may be a later intraday price snapshot, or (per Worked Example 2's own data) 137.3 specifically appears as that trade's **SL value**, which is a *different* marked level (S-1, per the already-confirmed `SL = S-1` rule) than the strike's own first-5-minute band — plausibly not an error at all, just a different, correctly-labeled level that isn't the one this document originally compared it against. Not confirmed as fact, but no longer an open contradiction requiring resolution — the reference-level question itself is closed.
 
 **Do not use either the 165.8/116 pair or the 137.3/141 pair for strike 24150 until the Product Owner clarifies which one (if either) is the correct first-5-minute Bottom reading for 29-07-2026.**
 
