@@ -69,6 +69,33 @@ class ExitReason(Enum):
 
 
 @unique
+class AnchorRole(Enum):
+    """Which boundary strike a qualification ladder is anchored to -
+    Top Strike or Bottom Strike (both already confirmed,
+    ``strike_selector.strike_selector.StrikeSelector``). Determines
+    which reference-level column plays the entry-column/confirm-
+    column role for each trade side (Product Owner General Rule
+    Statement, ``research/incoming/qualification_session1_intake_2026-07-31.md``)."""
+
+    TOP = "TOP"
+    BOTTOM = "BOTTOM"
+
+
+@unique
+class TrendDirection(Enum):
+    """The underlying's directional bias, checked before any
+    qualification crossover is evaluated (Product Owner Entry/
+    Target/SL/TSL Clarification, 2026-08-01: "First we have get the
+    current market trend bullish/bearish"). How trend itself is
+    computed is UNRESOLVED - Awaiting Strategy Evidence; this enum is
+    an injected input to ``qualification_engine.qualification_engine.QualificationEngine``,
+    not something it computes."""
+
+    BULLISH = "BULLISH"
+    BEARISH = "BEARISH"
+
+
+@unique
 class ORBStatus(Enum):
     """A strike/side's Opening Range Breakout classification.
 

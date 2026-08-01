@@ -2,7 +2,33 @@
 
 from __future__ import annotations
 
-from core.enums import EventPriority, ExitReason, OptionType, TradeDirection, TradeState
+from core.enums import (
+    AnchorRole,
+    EventPriority,
+    ExitReason,
+    OptionType,
+    TradeDirection,
+    TradeState,
+    TrendDirection,
+)
+
+
+class TestAnchorRole:
+    def test_members(self) -> None:
+        assert AnchorRole.TOP.value == "TOP"
+        assert AnchorRole.BOTTOM.value == "BOTTOM"
+
+    def test_exactly_two_members(self) -> None:
+        assert len(AnchorRole) == 2
+
+
+class TestTrendDirection:
+    def test_members(self) -> None:
+        assert TrendDirection.BULLISH.value == "BULLISH"
+        assert TrendDirection.BEARISH.value == "BEARISH"
+
+    def test_exactly_two_members(self) -> None:
+        assert len(TrendDirection) == 2
 
 
 class TestOptionType:
