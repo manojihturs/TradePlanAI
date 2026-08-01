@@ -186,6 +186,60 @@ def _target_hit_candle() -> OptionChainCandle:
     return OptionChainCandle(timestamp=_EXIT_TIME, strikes=tuple(pairs))
 
 
+def _entry_candle_with_ambiguous_legacy_winner() -> OptionChainCandle:
+    # WinnerStage (legacy flow) watches fixture.anchor_strike (_ANCHOR,
+    # 24000) - a DIFFERENT strike than the qualification flow's Top
+    # Strike (_TOP, _ANCHOR+50). To make the legacy flow fault on the
+    # SAME candle the qualification flow genuinely enters on, this
+    # candle carries touch data at BOTH strikes: _ANCHOR's own CE/PE
+    # both touching their own reference band (ce_low=130..ce_high=150,
+    # pe_low=90..pe_high=100 @ offset 0) - triggering
+    # AmbiguousWinnerError in "winner" - and _TOP's own CE/PE touching
+    # the qualification entry/confirm levels, unchanged from
+    # _entry_candle(). Proves the two flows run on independent
+    # orchestrators (see backtest.runner's own comment on why).
+    pairs = [
+        StrikeChainSnapshot(
+            strike=_ANCHOR,
+            ce=_snap(_ENTRY_TIME, Decimal(130), Decimal(150)),
+            pe=_snap(_ENTRY_TIME, Decimal(90), Decimal(100)),
+        ),
+        StrikeChainSnapshot(
+            strike=_TOP,
+            ce=_snap(_ENTRY_TIME, _ENTRY_LEVEL - Decimal("0.1"), _ENTRY_LEVEL + Decimal("0.1")),
+            pe=_snap(_ENTRY_TIME, _CONFIRM_LEVEL - Decimal("0.1"), _CONFIRM_LEVEL + Decimal("0.1")),
+        ),
+    ]
+    pairs.extend(_no_touch_pair(s, _ENTRY_TIME) for s in _strikes() if s not in (_ANCHOR, _TOP))
+    return OptionChainCandle(timestamp=_ENTRY_TIME, strikes=tuple(pairs))
+
+
+class TestQualificationIndependentOfLegacyFlowFaults:
+    def test_qualification_still_opens_when_legacy_winner_stage_faults(self) -> None:
+        fixture = BacktestFixture(
+            session_date=date(2026, 7, 30),
+            anchor_strike=_ANCHOR,
+            reference_inputs=_reference_inputs(),
+            dataset=OptionChainDataset(
+                session_date=date(2026, 7, 30),
+                candles=(_entry_candle_with_ambiguous_legacy_winner(),),
+            ),
+        )
+
+        result = BacktestRunner().run(fixture, TrendDirection.BULLISH)
+
+        # The legacy flow faulted (AmbiguousWinnerError) on this exact
+        # candle - business_results still records that fault...
+        assert result.business_results[0].success is False
+        assert "winner" in result.business_results[0].error.args[0]
+        # ...but the independent qualification flow still opened a
+        # position on the SAME candle, unaffected.
+        assert len(result.qualification_positions) == 1
+        assert result.qualification_positions[0].entry_strike == _TOP
+        assert "qualification" in result.business_results[0].completed_stages
+        assert "qualification_exit" in result.business_results[0].completed_stages
+
+
 class TestQualificationFlow:
     def test_qualification_position_closes_via_target_mid_run(self) -> None:
         fixture = BacktestFixture(

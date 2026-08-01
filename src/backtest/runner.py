@@ -190,34 +190,50 @@ class BacktestRunner:
             trailing_stop=NeverTriggersQualificationTrailingStop(),
         )
 
-        orchestrator = BusinessOrchestrator(
-            ExecutionContext(mode=ExecutionMode.REPLAY, event_bus=bus)
-        )
-        orchestrator.register(
+        # Two separate orchestrators, not one combined registration list:
+        # a fault in the legacy flow (e.g. AmbiguousWinnerError) halts
+        # ITS OWN orchestrator's remaining stages
+        # (business.business_pipeline.BusinessPipeline.execute's own
+        # documented halt-on-fault behaviour), which would otherwise
+        # silently skip the qualification stages too if they shared one
+        # orchestrator - defeating the whole point of these being
+        # "genuinely separate, independently-confirmed" mechanisms (see
+        # this module's own docstring). The qualification orchestrator
+        # runs on the legacy orchestrator's resulting context (so it
+        # still sees weekly_future/selected_strike/reference_data), but
+        # with its own independent halt state.
+        legacy_execution = ExecutionContext(mode=ExecutionMode.REPLAY, event_bus=bus)
+        legacy_orchestrator = BusinessOrchestrator(legacy_execution)
+        legacy_orchestrator.register(
             WeeklyFutureStage(
                 anchor_strike=fixture.anchor_strike,
                 weekly_future_calculator=WeeklyFutureCalculator(),
                 strike_selector=StrikeSelector(),
             )
         )
-        orchestrator.register(
+        legacy_orchestrator.register(
             ORBStage(
                 anchor_strike=fixture.anchor_strike,
                 side=OptionType.CALL,
                 orb_engine=ORBEngine(),
             )
         )
-        orchestrator.register(
+        legacy_orchestrator.register(
             WinnerStage(anchor_strike=fixture.anchor_strike, winner_engine=winner_engine)
         )
-        orchestrator.register(ExitStage(exit_engine=exit_engine, position_manager=position_manager))
-        orchestrator.register(
+        legacy_orchestrator.register(
+            ExitStage(exit_engine=exit_engine, position_manager=position_manager)
+        )
+
+        qualification_execution = ExecutionContext(mode=ExecutionMode.REPLAY, event_bus=bus)
+        qualification_orchestrator = BusinessOrchestrator(qualification_execution)
+        qualification_orchestrator.register(
             QualificationStage(
                 qualification_engine=qualification_engine,
                 position_manager=qualification_position_manager,
             )
         )
-        orchestrator.register(
+        qualification_orchestrator.register(
             QualificationExitStage(
                 exit_engine=qualification_exit_engine,
                 position_manager=qualification_position_manager,
@@ -243,7 +259,9 @@ class BacktestRunner:
                 chain_snapshot=candle.strikes,
                 trend=trend,
             )
-            result = orchestrator.run(context)
+            legacy_result = legacy_orchestrator.run(context)
+            qualification_result = qualification_orchestrator.run(legacy_result.context)
+            result = self._merge_results(legacy_result, qualification_result)
             business_results.append(result)
             if result.context.qualification_exited_position is not None:
                 qualification_positions.append(result.context.qualification_exited_position)
@@ -257,4 +275,25 @@ class BacktestRunner:
             business_results=tuple(business_results),
             trade_history=trade_history,
             qualification_positions=tuple(qualification_positions),
+        )
+
+    @staticmethod
+    def _merge_results(legacy: BusinessResult, qualification: BusinessResult) -> BusinessResult:
+        """Combine one candle's legacy-flow and qualification-flow
+        results into a single :class:`~business.business_result.BusinessResult`,
+        preserving the existing one-result-per-candle shape callers
+        already expect, while keeping the two orchestrators'
+        success/halt state genuinely independent (see the caller's own
+        comment for why they are separate orchestrators at all).
+        """
+        return BusinessResult(
+            success=legacy.success and qualification.success,
+            context=qualification.context,
+            completed_stages=legacy.completed_stages + qualification.completed_stages,
+            skipped_stages=legacy.skipped_stages + qualification.skipped_stages,
+            warnings=legacy.warnings + qualification.warnings,
+            execution_time=legacy.execution_time + qualification.execution_time,
+            diagnostics=legacy.diagnostics + qualification.diagnostics,
+            stage_diagnostics=legacy.stage_diagnostics + qualification.stage_diagnostics,
+            error=legacy.error if legacy.error is not None else qualification.error,
         )
