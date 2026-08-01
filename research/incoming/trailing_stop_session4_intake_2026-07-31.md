@@ -14,10 +14,13 @@
 
 **Reading (not the evidence of record — the quote above is):** activation/minimum guarantee = 3 points (confirms the already-accepted rule, states its purpose explicitly as covering fees). Step ratio: **for every 5 points the premium moves favorably, the trailing stop itself moves up 2 points** — i.e. the stop trails at 2/5 (0.4) of the premium's own favorable movement, not point-for-point. This is the **first stated step-size rule** for this engine — previously entirely MISSING INFORMATION.
 
+**Activation trigger — Product Owner-supplied (2026-08-01), verbatim:** "Breakeven-first, that's how I do it."
+
+**Reading (not the evidence of record — the quote above is):** the trail does **not** start moving from the instant of entry. It stays inactive until price has moved favorably enough to lock in breakeven (or the already-confirmed +3-point minimum net) — only then does the 2-points-of-trail-per-5-points-of-favorable-movement step rule (already confirmed above) begin applying. Before that point is reached, the position's Stop Loss is whatever `SL = Support` already resolves to (Session 3, `CE(S-1)`/`PE(S+1)`) — Trailing Stop is a distinct, later-activating mechanism layered on top of it, not a replacement for it from the moment of entry.
+
 **Still missing:**
-- The exact activation trigger (does trailing start the instant the +3 point minimum is reached, or is there a separate, distinct trigger condition?).
 - The brokerage/exchange/tax figures needed to compute "+3 net" as an exact number (still not supplied).
-- A dated worked example showing this 5-points-in/2-points-of-trail ratio applied to real numbers, to confirm it the same way other rules in this project have been (per `evidence_acceptance_checklist.md`).
+- A dated worked example showing the full sequence (entry → SL active → breakeven reached → trail activates → 2-per-5 stepping → exit) applied to real numbers, to confirm it the same way other rules in this project have been (per `evidence_acceptance_checklist.md`).
 
 ---
 
