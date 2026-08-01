@@ -296,6 +296,22 @@ Applying the rule to this table: a CE trade at Top (24250) would compare against
 
 ---
 
+## Open Question — Same-Level Re-Entry Behavior (raised 2026-08-01, from backtest-vs-manual-log comparison)
+
+**Status: genuinely new, unanswered.** Discovered by running the confirmed `QualificationEngine` pipeline against real live Upstox data for 29/30/31-July-2026 and comparing the simulated trades directly against the Product Owner's own manually-traded logs (`daily_data_2026-07-31.md`) for the same days.
+
+**What matched:** wherever CE was the actual traded side, the simulation's Target/Stop Loss/Competitor Exit levels matched the manual log's own recorded levels exactly or near-exactly (e.g. 30-July TOP @ 10:40: both show Target 120.1 / SL 80 / Competitor 121.5; 29-July BOTTOM @ 9:20: both show Target 189.6 / SL 137.3 / Competitor 116). This is independent corroboration that the confirmed Entry/Target/SL/Competitor mechanism is computing correctly.
+
+**What didn't match — the open question:** where the Product Owner's manual log records **one** trade held from entry through to Target Hit or session close, the simulation instead shows **multiple separate entries and exits at the exact same price zone** — e.g. 29-July, TOP anchor: the manual log records one trade from 11:05 held to end of day; the simulation shows six separate open/close cycles at that same 179.7/128/117.65 level zone, each ending in a Competitor Hit before immediately re-qualifying and re-entering. The engine currently treats every Competitor Hit as a full close, with no suppression on immediately re-entering the same level afterward.
+
+**The question to ask directly:** when the same marked level gets touched again during the same session (after a Competitor Hit closed the previous trade at/near that level), should the engine treat that as a **new, independent trade**, or should it recognize it as **continuing the same original position** (i.e., the Competitor touch that closed it was itself not real, or there's a cooldown/re-entry suppression rule not yet captured)?
+
+**Do not guess at this** — it changes real behavior (trade count, and likely which exit reasons actually fire) and has not been stated anywhere in the evidence gathered so far. Worth asking with a specific example in hand (e.g. "on 29-July, TOP strike, between 11:05 and end of day — was that one trade in your mind, or several?").
+
+**Secondary, already-known limitation reconfirmed by this comparison (not new, just corroborated):** the missing PE trades in the simulation trace directly to `TrendDirection` being hardcoded BULLISH for the whole session in this ad hoc comparison run, not a rule gap — trend computation itself remains externally-supplied by design (see `core.enums.TrendDirection`'s own docstring). Real per-candle/per-session trend would need to be supplied for a simulation to fully reproduce a day with both CE and PE trades.
+
+---
+
 ## After this session
 
 1. This filled-in file gets a **Rule ID** assigned (reuse `QUAL-007` — it already exists in `docs/RULE_INDEX.md`) and stays in `research/incoming/` under its current filename.
