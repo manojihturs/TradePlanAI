@@ -60,12 +60,20 @@ class ExitReason(Enum):
     mechanics remain MISSING INFORMATION (Specification Section 20
     items 4, 9-10) - only the four names, not their trigger logic,
     are encoded here.
+
+    ``SESSION_END`` is a fifth member, added 2026-08-01 for QUAL-011
+    (``research/specifications/qualification_rule_catalog.md``) - a
+    real, confirmed event (Product Owner trade logs record it
+    verbatim as "market closed, No level touched"), scoped as
+    session-boundary orchestration rather than a per-candle
+    ``ExitEngine``/``QualificationExitEngine`` condition.
     """
 
     TARGET_HIT = "TARGET_HIT"
     COMPETITOR_HIT = "COMPETITOR_HIT"
     STOP_LOSS = "STOP_LOSS"
     TRAILING_STOP = "TRAILING_STOP"
+    SESSION_END = "SESSION_END"
 
 
 @unique

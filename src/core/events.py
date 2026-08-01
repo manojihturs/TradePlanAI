@@ -196,6 +196,49 @@ class TradeClosedEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class QualificationOpenedEvent:
+    """A Qualification-Engine-derived trade has been opened (Sprint
+    11, QUAL-007 resolved 2026-08-01). Mirrors ``TradeOpenedEvent``'s
+    shape for the Rule 2/Winner-Engine flow, but carries the already-
+    concrete premium levels
+    ``qualification_engine.qualification_engine.QualificationEngine``
+    computes, not strikes to be re-looked-up later."""
+
+    event_id: uuid.UUID
+    occurred_at: datetime
+    position_id: uuid.UUID
+    entry_strike: Decimal
+    entry_side: TradeDirection
+    entry_level: Decimal
+    target_level: Decimal
+    stop_loss_level: Decimal
+    competitor_exit_level: Decimal
+    priority: EventPriority = EventPriority.HIGH
+
+    def __post_init__(self) -> None:
+        _validate_common(self.event_id, self.occurred_at, "QualificationOpenedEvent")
+        if self.position_id is None:
+            raise ValidationError("QualificationOpenedEvent.position_id must not be None.")
+
+
+@dataclass(frozen=True, slots=True)
+class QualificationClosedEvent:
+    """A Qualification-Engine-derived trade has been closed (Sprint
+    11)."""
+
+    event_id: uuid.UUID
+    occurred_at: datetime
+    position_id: uuid.UUID
+    exit_reason: ExitReason
+    priority: EventPriority = EventPriority.HIGH
+
+    def __post_init__(self) -> None:
+        _validate_common(self.event_id, self.occurred_at, "QualificationClosedEvent")
+        if self.position_id is None:
+            raise ValidationError("QualificationClosedEvent.position_id must not be None.")
+
+
+@dataclass(frozen=True, slots=True)
 class TargetHitEvent:
     """The active trade's Target reference level was reached
     (Specification Rule 2, CONFIRMED mapping)."""

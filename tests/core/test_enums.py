@@ -66,6 +66,7 @@ class TestExitReason:
             "COMPETITOR_HIT",
             "STOP_LOSS",
             "TRAILING_STOP",
+            "SESSION_END",
         }
 
 

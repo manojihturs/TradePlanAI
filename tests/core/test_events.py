@@ -14,6 +14,8 @@ from core.events import (
     Event,
     MarketCloseEvent,
     MarketOpenEvent,
+    QualificationClosedEvent,
+    QualificationOpenedEvent,
     StrikeSelectedEvent,
     TargetHitEvent,
     TradeClosedEvent,
@@ -184,6 +186,56 @@ class TestTradeClosedEvent:
     def test_none_trade_id_raises(self, event_id: uuid.UUID, occurred_at: datetime) -> None:
         with pytest.raises(ValidationError, match="trade_id must not be None"):
             TradeClosedEvent(event_id, occurred_at, None, ExitReason.TARGET_HIT)  # type: ignore[arg-type]
+
+
+class TestQualificationOpenedEvent:
+    def test_valid_construction(
+        self, event_id: uuid.UUID, occurred_at: datetime, trade_id: uuid.UUID
+    ) -> None:
+        event = QualificationOpenedEvent(
+            event_id,
+            occurred_at,
+            trade_id,
+            Decimal(24250),
+            TradeDirection.CE,
+            Decimal("120.1"),
+            Decimal("145.2"),
+            Decimal("98.3"),
+            Decimal("121.5"),
+        )
+        assert event.entry_strike == Decimal(24250)
+        assert event.entry_level == Decimal("120.1")
+        assert event.target_level == Decimal("145.2")
+        assert event.stop_loss_level == Decimal("98.3")
+        assert event.competitor_exit_level == Decimal("121.5")
+
+    def test_none_position_id_raises(self, event_id: uuid.UUID, occurred_at: datetime) -> None:
+        with pytest.raises(ValidationError, match="position_id must not be None"):
+            QualificationOpenedEvent(
+                event_id,
+                occurred_at,
+                None,  # type: ignore[arg-type]
+                Decimal(1),
+                TradeDirection.CE,
+                Decimal(1),
+                Decimal(1),
+                Decimal(1),
+                Decimal(1),
+            )
+
+
+class TestQualificationClosedEvent:
+    def test_valid_construction(
+        self, event_id: uuid.UUID, occurred_at: datetime, trade_id: uuid.UUID
+    ) -> None:
+        event = QualificationClosedEvent(event_id, occurred_at, trade_id, ExitReason.TARGET_HIT)
+        assert event.exit_reason == ExitReason.TARGET_HIT
+
+    def test_none_position_id_raises(self, event_id: uuid.UUID, occurred_at: datetime) -> None:
+        with pytest.raises(ValidationError, match="position_id must not be None"):
+            QualificationClosedEvent(
+                event_id, occurred_at, None, ExitReason.TARGET_HIT  # type: ignore[arg-type]
+            )
 
 
 class TestTargetHitEvent:
