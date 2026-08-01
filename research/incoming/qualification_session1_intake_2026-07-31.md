@@ -169,7 +169,75 @@ Applying the rule to this table: a CE trade at Top (24250) would compare against
 
 ---
 
-## Worked Example 2
+## Worked Example 2 — 29-July-2026
+
+**Correction to earlier finding:** this table's Bottom (24150) trade uses **Entry = 165.8** and **SL = 137.3** — both values from the discrepancy flagged in `daily_data_2026-07-31.md` (table said 165.8, a screenshot said 137.3). **This strongly suggests the discrepancy was never a data error** — 165.8 (the docx table's "PE High") and 137.3 (the screenshot's label) are simply two *different* marked levels in the same ladder: 165.8 is the level used as this trade's Entry (S), 137.3 is the next marked level down, used as SL (S-1) — exactly matching the already-confirmed `SL = S-1` rule. **Candidate resolution, not yet the Product Owner's own confirmation** (they said "will confirm" to the original question) — recorded here because the internal arithmetic support is strong, not as a final answer.
+
+**Full trade-log table, verbatim:**
+
+```
+29-July-2026  Anchor       Entry time  Price   Target   SL       TSL          CE/PE  Ref Label 1     Ref Label 2      Competitor Price  Exit time  Exit price  Captured  Total     Entry reason                                                    Exit Reason
+              24200-TOP    11.05       152.05  179.7    128      You can fix  CE     24250PE Low     24250CE High    117.62            15.25      146.5       -5.55     -360.75   CE crossed 24250PE Low and same time PE crosses 24250CE High  market closed (No level touched)
+              24150-BOTTOM 9.2         165.8   189.6    137.3    You can fix  CE     24200PE High    24200CE Low     116               12.05      189.6       23.8      1547      CE crossed 24200PE high and same time PE crosses 24200CE low  Target hit first and Competitor line not hit
+                           13.05       189.6   221.35   165.8    You can fix  CE     24250PE High    24250CE Low     92.5              15.25      177.55      -12.05    -783.25   CE crossed 24250PE high and same time PE crosses 24250CE low  market closed (No level touched)
+```
+
+**Arithmetic check (all 3 rows): `Total = Captured points × 65`, exact** — (-5.55×65=-360.75), (23.8×65=1547), (-12.05×65=-783.25). Further corroborates the lot-size-65 finding from 22-July.
+
+**New exit type found: "market closed (No level touched)"** — a trade still open at market close, forced closed at whatever the current price is, with no Target/SL/Competitor/TSL condition having fired. This is a **fifth exit condition**, beyond the four (Target/Competitor/SL/Trailing Stop) currently coded into `ExitEngine` — none of which currently model an end-of-day forced close.
+
+**Sequential re-entry pattern reconfirmed**: row 3's Entry (189.6) = row 2's Exit; row 3's SL (165.8) = row 2's own Entry price — same "SL trails to the previous trade's entry" pattern already noted for 22-July.
+
+**Competitor identity reconfirmed as "any marked level," not fixed**: 24200-TOP's trade competitor is 24250 (an adjacent strike above); 24150-BOTTOM's two trades use competitors 24200 then 24250 (moving further away each re-entry) — consistent with the 2026-08-01 clarification, not the same-strike-only reading.
+
+---
+
+## Worked Example 3 — 30-July-2026
+
+**Full trade-log table, verbatim (6 trades across both anchors):**
+
+```
+30-July-2026  Anchor       Entry time  Price   Target   SL      TSL          CE/PE  Ref Label 1     Ref Label 2      Competitor Price  Exit time  Exit price  Captured  Total     Entry reason                                                    Exit Reason
+              24250-TOP    9.2         120.1   145.2    98.3    You can fix  CE     24250PE Low     24250CE High    121.5             10.25      98.3        -21.8     -1417     CE crossed 24250PE Low and same time PE crosses 24250CE High  SL Hit
+                           10.4        98.3    120.1    80      You can fix  CE     24200PE Low     24250CE High    121.5             11.25      120.1       21.8      1417      CE crossed 24200PE Low and same time PE crosses 24250CE High  Target Hit first
+                           13.1        103.2   121.5    74.75   You can fix  PE     24300CE High    24250PE Low     120.1             14.3       121.5       18.3      1189.5    PE crossed 24300CE high and same time CE crosses 24250PE low  Target Hit first
+                           14.45       120.1   145.2    98.3    You can fix  CE     24250PE Low     24300CE High    103.2             15.25      134         13.9      903.5     CE crossed 24250PE Low and same time PE crosses 24300CE High  market closed (No level touched)
+              24150-BOTTOM 10.4        159     189      131.6   You can fix  CE     24250PE High    24250CE Low     87                12.3       189         30        1950      CE crossed 24250PE high and same time PE crosses 24250CE low  Target hit first
+                           13.1        67.05   87       50.5    You can fix  PE     24300CE Low     24300PE High    189               14.2       74.35       7.3       474.5     PE crossed 24300CE low and same time CE crosses 24300PE high  24300PE High competitor level touched first
+```
+
+**Arithmetic check (all 6 rows): `Total = Captured points × 65`, exact on every row.**
+
+**First SL-hit-then-immediate-re-entry example**: row 1 stopped out at 98.3 (SL Hit); row 2 re-enters at exactly 98.3 (the same price), not just after a Target hit — shows the sequential re-entry pattern applies after SL exits too, not only Target exits.
+
+**Explicit "competitor level touched" exit reason** (row 6): "24300PE High competitor level touched first" — directly confirms the Competitor Exit condition by name, with the exact level identified.
+
+---
+
+## Worked Example 4 — 31-July-2026
+
+**Important correction to this project's own prior finding**: this trade log proves NIFTY options traded normally on 31-July-2026. The earlier attempt to backtest this date via the Upstox connector returned zero rows for every strike tried, which was tentatively attributed to "possibly a market holiday" — **that guess was wrong**. The real cause was a data-availability gap specific to the Upstox historical API for that date, not an actual market closure. Corrected here rather than left standing.
+
+**Full trade-log table, verbatim:**
+
+```
+31-July-2026  Anchor       Entry time  Price   Target   SL      TSL          CE/PE  Ref Label 1     Ref Label 2      Competitor Price  Exit time  Exit price  Captured  Total     Entry reason                                                    Exit Reason
+              24400-TOP    9.3         145     180      86.85   You can fix  PE     24350CE High    24300PE Low     64.75             12.25      83.35       -61.65    -4007.25  PE crossed 24300CE high and same time CE crosses 24300PE low  24350PE low competitor level touched first
+              24300-BOTTOM 9.3         92.75   121      71.15   You can fix  PE     24350CE Low     24300PE High    123               10.35      71.15       -21.6     -1404     PE crossed 24350CE low and same time CE crosses 24300PE high  SL hit
+                           10.4        123     139.95   98.7    You can fix  CE     24350PE High    24400CE Low     71.15             12.1       139.95      16.95     1101.75   CE crossed 24350PE high and same time PE crosses 24400CE low  target hit first
+```
+
+**Arithmetic check (all 3 rows): `Total = Captured points × 65`, exact.**
+
+**Minor inconsistency in the source text itself, recorded not silently corrected**: row 1's Entry reason says "PE crossed 24300CE high and same time CE crosses 24300PE low," but the Ref Label columns for that same row say "24350CE High"/"24300PE Low" — a strike mismatch (24300 vs 24350) between the prose and the labeled columns. Similarly its Exit Reason names "24350PE low," a level not identified anywhere else in that row. Likely a transcription slip in the original data, not a business-rule contradiction — flagged for the Product Owner to clarify if it matters, not treated as evidence of a different rule.
+
+**Top Strike 24400 / Bottom Strike 24300 for this day** — notably different range than 22/29/30-July (24150-24250), consistent with real underlying price movement across the week, not a data anomaly.
+
+---
+
+## Worked Example 5 (optional — strongly recommended for a Counter Example)
+
+**Status: no longer strictly required** — with Worked Examples 1-4 (22/29/30/31-July) now supplying 4 independent dated examples, this document already exceeds `evidence_acceptance_checklist.md`'s "minimum three worked examples" bar for the core Entry/Target/SL/Competitor mechanics. Still valuable if a clean Counter Example (a day where the pattern visibly breaks) exists — otherwise this slot can stay blank.
 
 **Date:** _______________
 **Strike(s) involved:** _______________
@@ -188,45 +256,7 @@ Applying the rule to this table: a CE trade at Top (24250) would compare against
 
 ---
 
-## Worked Example 3
-
-**Date:** _______________
-**Strike(s) involved:** _______________
-
-1. **Why was this trade qualified?**
-
-2. **Which competitor was compared?**
-
-3. **Why this competitor?**
-
-4. **Would another competitor have changed the result?**
-
-**Raw supporting data:**
-
-**Counter Example for this day, if any:**
-
----
-
-## Worked Example 4 (optional — strongly recommended for a Counter Example)
-
-**Date:** _______________
-**Strike(s) involved:** _______________
-
-1. **Why was this trade qualified?**
-
-2. **Which competitor was compared?**
-
-3. **Why this competitor?**
-
-4. **Would another competitor have changed the result?**
-
-**Raw supporting data:**
-
-**Counter Example for this day, if any:**
-
----
-
-## Worked Example 5 (optional)
+## Worked Example 6 (optional)
 
 **Date:** _______________
 **Strike(s) involved:** _______________
@@ -269,3 +299,5 @@ Applying the rule to this table: a CE trade at Top (24250) would compare against
 3. Score the result against `research/specifications/evidence_acceptance_checklist.md`.
 4. Log the outcome as a new row in `research/evidence_log.md` (Evidence Complete → Implement / Evidence Partial → Research / Evidence Missing → Freeze, per `research/specifications/product_owner_evidence_process.md`'s Decision Matrix).
 5. Only on an **Implement** outcome does Sprint 10 (Qualification Engine) become eligible to start.
+
+**Status as of 2026-08-01, updated:** 4 independent dated worked examples now exist (22/29/30/31-July-2026), each internally arithmetic-consistent (`Total = Captured × 65` exact on every one of ~16 trade rows), each showing the same Entry/Target(S+1)/Competitor(S-1)/SL(S-1) structure and the "any marked level, trend-confirmed" competitor rule holding without exception. This clears the raw "≥3 worked examples, consistent outputs" bar. **Not yet a full Evidence Complete / Implement outcome** — remaining before a formal scoring pass: PE-side SL confirmation, the WinnerEngine full-ladder-vs-single-band scope question, and a decision on how to handle the newly-found fifth exit type ("market closed, no level touched") that `ExitEngine` doesn't currently model at all.
