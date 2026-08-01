@@ -17,6 +17,7 @@ from core.enums import AnchorRole, ExitReason, TradeDirection
 from core.exceptions import ValidationError
 from models.market_snapshot import MarketSnapshot
 from models.qualification_signal import QualificationSignal
+from models.qualified_position import QualifiedPosition
 from models.strike import StrikeSelection
 from models.strike_chain_snapshot import StrikeChainSnapshot
 from qualification_engine.qualification_exit_engine import QualificationExitEngine
@@ -72,23 +73,25 @@ def _chain_snapshot(
 def _context(
     chain_snapshot: tuple[StrikeChainSnapshot, ...] = (),
     selected_strike: StrikeSelection | None = None,
+    qualified_position: QualifiedPosition | None = None,
 ) -> PipelineContext:
     return PipelineContext(
         session_id=uuid.uuid4(),
         candle_timestamp=_TIMESTAMP,
         chain_snapshot=chain_snapshot,
         selected_strike=selected_strike,
+        qualified_position=qualified_position,
     )
 
 
 def _build_stage_with_open_position() -> (
-    tuple[QualificationExitStage, QualificationPositionManager]
+    tuple[QualificationExitStage, QualificationPositionManager, QualifiedPosition]
 ):
     position_manager = QualificationPositionManager()
     exit_engine = QualificationExitEngine(
         position_manager=position_manager, trailing_stop=NeverTriggersQualificationTrailingStop()
     )
-    position_manager.open(
+    position = position_manager.open(
         QualificationSignal(
             signal_id=uuid.uuid4(),
             anchor_role=AnchorRole.TOP,
@@ -101,8 +104,9 @@ def _build_stage_with_open_position() -> (
             qualified_at=_TIMESTAMP,
         )
     )
+    assert position is not None
     stage = QualificationExitStage(exit_engine=exit_engine, position_manager=position_manager)
-    return stage, position_manager
+    return stage, position_manager, position
 
 
 class TestIsReady:
@@ -136,7 +140,7 @@ class TestRunNoActivePosition:
 
 class TestRunWithActivePosition:
     def test_finds_anchor_when_not_first_in_chain_snapshot(self) -> None:
-        stage, _position_manager = _build_stage_with_open_position()
+        stage, _position_manager, _pos = _build_stage_with_open_position()
         execution = ExecutionContext(mode=ExecutionMode.REPLAY)
         chain_snapshot = (
             StrikeChainSnapshot(strike=_BOTTOM, ce=_no_touch(), pe=_no_touch()),
@@ -150,7 +154,7 @@ class TestRunWithActivePosition:
         assert outcome.context.qualification_exited_position.exit_reason == ExitReason.TARGET_HIT
 
     def test_neither_touches_position_stays_open(self) -> None:
-        stage, position_manager = _build_stage_with_open_position()
+        stage, position_manager, _pos = _build_stage_with_open_position()
         execution = ExecutionContext(mode=ExecutionMode.REPLAY)
         context = _context(_chain_snapshot(), _selected_strike())
 
@@ -160,7 +164,7 @@ class TestRunWithActivePosition:
         assert position_manager.is_trade_active() is True
 
     def test_target_touch_closes_via_target_hit(self) -> None:
-        stage, position_manager = _build_stage_with_open_position()
+        stage, position_manager, _pos = _build_stage_with_open_position()
         execution = ExecutionContext(mode=ExecutionMode.REPLAY)
         context = _context(_chain_snapshot(top_ce=_touching("145.2")), _selected_strike())
 
@@ -171,7 +175,7 @@ class TestRunWithActivePosition:
         assert position_manager.is_trade_active() is False
 
     def test_competitor_touch_closes_via_competitor_hit(self) -> None:
-        stage, _ = _build_stage_with_open_position()
+        stage, _, _pos = _build_stage_with_open_position()
         execution = ExecutionContext(mode=ExecutionMode.REPLAY)
         context = _context(_chain_snapshot(top_pe=_touching("121.5")), _selected_strike())
 
@@ -183,7 +187,7 @@ class TestRunWithActivePosition:
         )
 
     def test_missing_selected_strike_raises(self) -> None:
-        stage, _ = _build_stage_with_open_position()
+        stage, _, _pos = _build_stage_with_open_position()
         execution = ExecutionContext(mode=ExecutionMode.REPLAY)
         context = _context(_chain_snapshot(), None)
 
@@ -191,17 +195,37 @@ class TestRunWithActivePosition:
             stage.run(context, execution)
 
     def test_missing_anchor_in_chain_snapshot_raises(self) -> None:
-        stage, _ = _build_stage_with_open_position()
+        stage, _, _pos = _build_stage_with_open_position()
         execution = ExecutionContext(mode=ExecutionMode.REPLAY)
         context = _context(_chain_snapshot(include_top=False), _selected_strike())
 
         with pytest.raises(ValidationError, match="No StrikeChainSnapshot found for anchor strike"):
             stage.run(context, execution)
 
+    def test_skips_exit_check_for_position_opened_this_same_candle(self) -> None:
+        # Touching data for both Target and Competitor is present, but
+        # since context.qualified_position matches the active position,
+        # this candle is the one that just opened it - exit monitoring
+        # must not fire yet (see qualification_exit_stage's own
+        # docstring for why).
+        stage, position_manager, position = _build_stage_with_open_position()
+        execution = ExecutionContext(mode=ExecutionMode.REPLAY)
+        context = _context(
+            _chain_snapshot(top_ce=_touching("145.2"), top_pe=_touching("121.5")),
+            _selected_strike(),
+            qualified_position=position,
+        )
+
+        outcome = stage.run(context, execution)
+
+        assert outcome.context is context
+        assert outcome.context.qualification_exited_position is None
+        assert position_manager.is_trade_active() is True
+
 
 class TestBusinessPipelineIntegration:
     def test_successful_run_through_orchestrator(self) -> None:
-        stage, _ = _build_stage_with_open_position()
+        stage, _, _pos = _build_stage_with_open_position()
         execution = ExecutionContext(mode=ExecutionMode.REPLAY)
         orchestrator = BusinessOrchestrator(execution)
         orchestrator.register(stage)
@@ -214,7 +238,7 @@ class TestBusinessPipelineIntegration:
         assert result.context.qualification_exited_position is not None
 
     def test_pipeline_stages_property_includes_the_stage(self) -> None:
-        stage, _ = _build_stage_with_open_position()
+        stage, _, _pos = _build_stage_with_open_position()
         pipeline = BusinessPipeline((stage,))
 
         assert pipeline.stages == (stage,)

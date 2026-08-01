@@ -71,6 +71,21 @@ class QualificationExitStage:
         position = self._position_manager.active_position()
         if position is None:
             return StageOutcome(context=context)
+        if context.qualified_position is not None and (
+            context.qualified_position.position_id == position.position_id
+        ):
+            # This position was opened by QualificationStage THIS SAME
+            # candle. Its confirming crossing (opposite side touching
+            # the confirm-column level) is numerically identical to
+            # competitor_exit_level by construction - checking exit on
+            # the same candle's data would always immediately close it
+            # via Competitor Hit, which the confirmed evidence's own
+            # trade logs contradict (many trades run 5-45 minutes
+            # before resolving). Exit monitoring starts the candle
+            # after entry, mirroring how the confirmed Rule 2 flow
+            # never checks Target/Competitor against the same strike's
+            # own entry-triggering candle either.
+            return StageOutcome(context=context)
         if context.selected_strike is None:
             raise ValidationError(
                 "QualificationExitStage requires PipelineContext.selected_strike "
