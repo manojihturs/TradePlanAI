@@ -18,34 +18,33 @@
 
 - [ ] **Counter example provided, or explicitly marked UNKNOWN.** **FAIL — genuine gap, not glossed over.** No Worked Example has an explicit "Counter Example" field filled in, not even as `UNKNOWN`. The underlying *substance* of counter-examples already exists in the data (SL-hit trades, "market closed, no level touched" trades — cases where Target was not simply hit cleanly), but per `evidence_submission_template.md`'s own rule, an unfilled field is incomplete regardless of what other data might imply it. This should be explicitly filled in, even if only pointing back to "row 1, 30-July, SL Hit" as the answer.
 
-- [ ] **No unresolved `Unknown` on a required input or output.** **FAIL — two concrete Unknowns remain.** (1) The **PE-side SL** is not yet confirmed — only `SL = CE(S-1)` has been confirmed; the symmetric `SL = PE(S+1)` is a reasonable but unconfirmed extension. (2) The **`WinnerEngine` scope question** — whether entry crossover must be checked against the full 13-level marked ladder or only the entry strike's own reference band — was explicitly deferred by the Product Owner ("need example") rather than answered, and is still open.
+- [~] **No unresolved `Unknown` on a required input or output.** **PARTIAL PASS — 1 of 2 Unknowns closed since this scoring was first run.** (1) **PE-side SL — RESOLVED (2026-08-01):** Product Owner confirmed "PE side same as CE, S+1" — `SL = PE(S+1)`, exactly matching the symmetric extension already predicted from Rule 2. Both sides are now Confirmed Rules. (2) The **`WinnerEngine` scope question** — whether entry crossover must be checked against the full 13-level marked ladder or only the entry strike's own reference band — remains open; the Product Owner already said this needs a worked example rather than a one-line answer.
 
 ---
 
-## Score: 4 of 6 checked (2 explicit fails, both concrete and fixable)
+## Score: 4.5 of 6 checked (1 explicit fail remains, concrete and fixable; the Counter Example item is small housekeeping)
 
 ## Verdict
 
-**Evidence Partial — not Evidence Complete.** Per `evidence_acceptance_checklist.md`'s own scoring rule ("Some boxes checked, at least one Confirmed Rule or consistent Worked Example exists → Evidence Partial → proceed to Research"), this is **not** yet an Implement outcome, despite how far it's come. This is real, substantial progress — QUAL-007 went from zero worked examples (the state that failed the original 2026-07-31 audit) to clearing 4 of 6 checklist items with concrete, arithmetic-verified data — but the two remaining gaps are specific and answerable, not vague.
+**Evidence Partial — not yet Evidence Complete, but closer than the first pass.** Per `evidence_acceptance_checklist.md`'s own scoring rule, this is **not** yet an Implement outcome. Since this document was first written, the PE-side SL Unknown has closed — SL is now a fully Confirmed Rule on both sides. **Exactly one substantive item remains**, plus one small housekeeping item.
 
 ## Targeted follow-up (Research, not Freeze)
 
-Exactly two items would flip this to Evidence Complete for the core rule:
+**The one remaining substantive item:**
 
-1. **PE-side SL confirmation** — one line from the Product Owner: does `SL = PE(S+1)` for a PE trade, matching the CE side's already-confirmed pattern?
-2. **The `WinnerEngine` scope question** — the Product Owner already said this needs a worked example rather than a one-line answer. The next dated trade log should specifically note whether the crossover that triggered entry involved a level from the entry strike's own band, or a level from elsewhere in the wider ladder — ideally an example where the two would give different answers, to make the distinction unambiguous.
+1. **The `WinnerEngine` scope question.** The next dated trade log should specifically note whether the crossover that triggered entry involved a level from the entry strike's own band, or a level from elsewhere in the wider ladder — ideally an example where the two would give different answers, to make the distinction unambiguous.
 
-Two more items are small housekeeping, not blockers to Evidence Complete once done:
+**Small housekeeping, not a blocker to Evidence Complete once done:**
 
-3. Fill the Counter Example field explicitly in at least one Worked Example (pointing to an existing SL-hit or forced-close row is sufficient).
-4. Get the Product Owner's confirmation (or correction) on the minor 31-July strike-label mismatch (24300 vs 24350 in the prose vs. the Ref Label columns).
+2. Fill the Counter Example field explicitly in at least one Worked Example (pointing to an existing SL-hit or forced-close row is sufficient).
+3. Get the Product Owner's confirmation (or correction) on the minor 31-July strike-label mismatch (24300 vs 24350 in the prose vs. the Ref Label columns).
 
 ## What this scoring does NOT cover
 
-- **Stop Loss as its own engine (Session 3):** CE side is now a Confirmed Rule (`SL = CE(S-1)`), same status as reflected in `stop_loss_session3_intake_2026-07-31.md`. PE side is the one open item (see above). Scored as **Evidence Partial** for the same reason.
+- **Stop Loss as its own engine (Session 3):** **now Evidence Complete for the SL rule itself** — both sides Confirmed (`CE(S-1)`/`PE(S+1)`, exactly matching Rule 2's Support). No open Unknowns remain for the SL price/basis question specifically. Still worth a final scoring pass against `stop_loss_session3_intake_2026-07-31.md`'s own checklist before declaring the engine ready to implement, since SL is only one part of `ExitEngine`'s SL leg.
 - **Trailing Stop (Session 4):** the +3 minimum and the 5-points-in/2-points-of-trail step ratio are both stated, but the activation trigger and the brokerage/exchange/tax figures needed to compute "+3 net" precisely are still missing. Scored as **Evidence Partial**.
 - **The new "market closed (no level touched)" exit type** and the deferred "standard pivot points" (Resistance) concept are both real findings from this evidence, but neither has been scored against the checklist — they are new scope, not part of QUAL-007's original blocker, and should go through their own Request→Submission cycle if the Product Owner wants to pursue them (Resistance/pivot points was explicitly deferred; the forced-close exit type has not yet been discussed either way).
 
 ## Recommendation
 
-Do not start Sprint 10 (Qualification Engine implementation) yet. Two short, specific answers away from a genuine Evidence Complete verdict for the core rule — worth getting those two answers before writing any code, rather than implementing 90% of a confirmed rule and having to revisit it.
+Do not start Sprint 10 (Qualification Engine implementation) yet. **One specific answer away** from a genuine Evidence Complete verdict for the core rule (the `WinnerEngine` scope question) — worth getting that answer, and filling the small housekeeping items, before writing any code.

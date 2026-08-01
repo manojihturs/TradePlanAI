@@ -16,7 +16,7 @@ An SL is naturally expressed on the trader's *own* position's premium — exactl
 
 **Product Owner confirmation (2026-08-01):** answered `CE(S-1)` — **confirms SL = Support for the CE side**, exactly matching the hypothesis above (`Support = CE(S-1)` for a CE trade, per Rule 2). This is now a **Confirmed Rule for the CE side**, not merely an inference.
 
-**Not yet confirmed:** the PE-side equivalent. By the same symmetric logic Rule 2 already uses elsewhere (`Support = PE(S+1)` for a PE trade), SL for a PE trade would be expected to equal `PE(S+1)` — but the Product Owner was only asked about, and only answered, the CE case. **Do not assume the PE side without asking directly** — this symmetric extension is a reasonable guess, not confirmed evidence, and should be verified the same way the CE side just was.
+**PE side — Product Owner confirmed (2026-08-01): "PE side same as CE, S+1."** Confirms `SL = PE(S+1)` for a PE trade, exactly matching the symmetric extension already predicted from Rule 2's own `Support = PE(S+1)` pattern. **`SL = Support` is now a Confirmed Rule for both sides** — `CE(S-1)` for CE trades, `PE(S+1)` for PE trades — no longer an inference or an open question.
 
 ---
 
