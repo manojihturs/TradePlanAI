@@ -179,7 +179,12 @@ class PipelineContext:
     def with_exited_position(self, exited_position: TradePosition) -> PipelineContext:
         return replace(self, exited_position=exited_position)
 
-    def with_trend(self, trend: TrendDirection) -> PipelineContext:
+    def with_trend(self, trend: TrendDirection | None) -> PipelineContext:
+        """Set (or clear, passing ``None``) ``trend``. Clearing was
+        added for
+        ``business.stages.multi_timeframe_confirmation_stage.MultiTimeframeConfirmationStage``,
+        which revokes a lower-timeframe trend signal that higher
+        timeframes don't confirm - see that module's own docstring."""
         return replace(self, trend=trend)
 
     def with_qualified_position_top(
