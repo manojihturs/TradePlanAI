@@ -18,9 +18,19 @@
 
 **Reading (not the evidence of record — the quote above is):** the trail does **not** start moving from the instant of entry. It stays inactive until price has moved favorably enough to lock in breakeven (or the already-confirmed +3-point minimum net) — only then does the 2-points-of-trail-per-5-points-of-favorable-movement step rule (already confirmed above) begin applying. Before that point is reached, the position's Stop Loss is whatever `SL = Support` already resolves to (Session 3, `CE(S-1)`/`PE(S+1)`) — Trailing Stop is a distinct, later-activating mechanism layered on top of it, not a replacement for it from the moment of entry.
 
-**Still missing:**
-- The brokerage/exchange/tax figures needed to compute "+3 net" as an exact number (still not supplied).
-- A dated worked example showing the full sequence (entry → SL active → breakeven reached → trail activates → 2-per-5 stepping → exit) applied to real numbers, to confirm it the same way other rules in this project have been (per `evidence_acceptance_checklist.md`).
+**"Net" basis — Product Owner-supplied (2026-08-02), verbatim:** "Just 3 raw premium points, no cost adjustment."
+
+**Reading:** resolves the outstanding brokerage/exchange/tax question — "+3 net" does **not** require any brokerage/tax figures to compute. The activation threshold is simply 3 raw premium points of favorable movement from entry, full stop. No cost-basis lookup table is needed to implement this engine.
+
+**Same-level re-entry — Product Owner-supplied (2026-08-02), verbatim:** "New trade every time." Confirms the already-implemented `QualificationPositionManager` behavior (every exit fully closes the position; a later re-touch of the same level opens a brand-new position) is correct as-is — no change required. Recorded here because it was asked alongside the TSL net-basis question in the same round; the substantive rule lives in `qualification_session1_intake_2026-07-31.md`'s "Open Question — Same-Level Re-Entry Behavior" section, now RESOLVED.
+
+**Still missing (does not block implementation of the confirmed rule, but leaves gaps for edge cases):**
+- No dated worked example showing the full sequence (entry → SL active → breakeven reached → trail activates → 2-per-5 stepping → exit) applied to real numbers.
+- Maximum-movement cap: unconfirmed whether the trail ever stops moving even as price keeps moving favorably, or trails indefinitely.
+- Whether the trail can ever loosen (move backward) once stepped — assumed NO (monotonic tightening only) as the only sane reading of "trailing," not explicitly confirmed.
+- Exact intra-candle sequencing when a single candle both extends the trail AND touches it (engineering default applied: same-candle high-water update before same-candle touch check — see `qualification_trailing_stop.py`).
+
+Given the two items above are now resolved and the general mechanism (breakeven-first activation, 2-per-5 step ratio, monotonic tightening) is unambiguous even without a full worked example, this is implemented as a real, confirmed default rather than kept as a null object — see `qualification_engine/qualification_trailing_stop.py`'s `BreakevenFirstQualificationTrailingStop`. The still-missing items above remain open edge cases, not blockers.
 
 ---
 

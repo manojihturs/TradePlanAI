@@ -74,7 +74,7 @@ from qualification_engine.qualification_engine import QualificationEngine
 from qualification_engine.qualification_exit_engine import QualificationExitEngine
 from qualification_engine.qualification_position_manager import QualificationPositionManager
 from qualification_engine.qualification_trailing_stop import (
-    NeverTriggersQualificationTrailingStop,
+    BreakevenFirstQualificationTrailingStop,
 )
 from reference_builder.reference_builder import ReferenceBuilder
 from strike_selector.strike_selector import StrikeSelector
@@ -197,11 +197,11 @@ class BacktestRunner:
         )
         top_qualification_exit_engine = QualificationExitEngine(
             position_manager=top_qualification_position_manager,
-            trailing_stop=NeverTriggersQualificationTrailingStop(),
+            trailing_stop=BreakevenFirstQualificationTrailingStop(),
         )
         bottom_qualification_exit_engine = QualificationExitEngine(
             position_manager=bottom_qualification_position_manager,
-            trailing_stop=NeverTriggersQualificationTrailingStop(),
+            trailing_stop=BreakevenFirstQualificationTrailingStop(),
         )
 
         # Two separate orchestrators, not one combined registration list:

@@ -298,7 +298,9 @@ Applying the rule to this table: a CE trade at Top (24250) would compare against
 
 ## Open Question — Same-Level Re-Entry Behavior (raised 2026-08-01, from backtest-vs-manual-log comparison)
 
-**Status: genuinely new, unanswered.** Discovered by running the confirmed `QualificationEngine` pipeline against real live Upstox data for 29/30/31-July-2026 and comparing the simulated trades directly against the Product Owner's own manually-traded logs (`daily_data_2026-07-31.md`) for the same days.
+**Status: RESOLVED (2026-08-02).** Product Owner, chat-supplied, verbatim: **"New trade every time."** A Competitor/Target/Stop Loss/Trailing Stop close is a real, full close of the position — a later re-touch of the same marked level (e.g. after re-qualification) opens a brand-new, independent position, not a continuation of the original. This confirms the already-implemented `QualificationPositionManager` behavior exactly as-is (every exit fully clears `_active`; the next qualifying signal opens a fresh position with a new `position_id`) — no code change was required to close this question.
+
+**Original open question, kept below for the record:** Discovered by running the confirmed `QualificationEngine` pipeline against real live Upstox data for 29/30/31-July-2026 and comparing the simulated trades directly against the Product Owner's own manually-traded logs (`daily_data_2026-07-31.md`) for the same days.
 
 **What matched:** wherever CE was the actual traded side, the simulation's Target/Stop Loss/Competitor Exit levels matched the manual log's own recorded levels exactly or near-exactly (e.g. 30-July TOP @ 10:40: both show Target 120.1 / SL 80 / Competitor 121.5; 29-July BOTTOM @ 9:20: both show Target 189.6 / SL 137.3 / Competitor 116). This is independent corroboration that the confirmed Entry/Target/SL/Competitor mechanism is computing correctly.
 
