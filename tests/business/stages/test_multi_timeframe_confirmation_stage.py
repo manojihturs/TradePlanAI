@@ -32,7 +32,10 @@ def _context(
     candles: tuple[MarketSnapshot, ...], trend: TrendDirection | None = None
 ) -> PipelineContext:
     return PipelineContext(
-        session_id=uuid.uuid4(), candle_timestamp=_TIMESTAMP, candles=candles, trend=trend
+        session_id=uuid.uuid4(),
+        candle_timestamp=_TIMESTAMP,
+        underlying_index_candles=candles,
+        trend=trend,
     )
 
 

@@ -16,6 +16,9 @@ to ``None`` via ``PipelineContext.with_trend(None)``, which makes
 ``business.stages.qualification_stage.QualificationStage`` not-ready
 for this candle (its own ``is_ready`` requires ``trend is not None``)
 - entries are silently skipped, not forced or overridden.
+
+Reads ``PipelineContext.underlying_index_candles`` (added 2026-08-02,
+distinct from ``candles`` - see that field's own docstring for why).
 """
 
 from __future__ import annotations
@@ -49,13 +52,13 @@ class MultiTimeframeConfirmationStage:
         present - a no-op (not an unmet prerequisite) if
         ``context.trend`` is already unset, since there is nothing to
         confirm or revoke."""
-        return len(context.candles) > 0
+        return len(context.underlying_index_candles) > 0
 
     def run(self, context: PipelineContext, execution: ExecutionContext) -> StageOutcome:
         """Confirm or revoke ``context.trend`` via the injected
         ``MultiTimeframeUTBotConfirmation``."""
         _ = execution
-        confirmed = self._confirmation.update(context.candles)
+        confirmed = self._confirmation.update(context.underlying_index_candles)
 
         if context.trend is None:
             return StageOutcome(context=context)

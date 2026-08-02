@@ -58,6 +58,7 @@ class TestConstruction:
         assert context.qualified_position_bottom is None
         assert context.qualification_exited_position_top is None
         assert context.qualification_exited_position_bottom is None
+        assert context.underlying_index_candles == ()
         assert context.diagnostics == ()
 
     def test_none_session_id_raises(self) -> None:
@@ -132,6 +133,13 @@ class TestWithMethods:
         context = _context().with_candles((candle,))
 
         assert context.candles == (candle,)
+
+    def test_with_underlying_index_candles(self) -> None:
+        candle = MarketSnapshot(timestamp=_ts(), underlying_price=Decimal(100))
+
+        context = _context().with_underlying_index_candles((candle,))
+
+        assert context.underlying_index_candles == (candle,)
 
     def test_with_orb_result(self) -> None:
         orb_result = ORBResult(

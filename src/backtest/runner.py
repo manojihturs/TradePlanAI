@@ -56,12 +56,15 @@ from business.execution_context import ExecutionContext, ExecutionMode
 from business.orchestrator import BusinessOrchestrator
 from business.pipeline_context import PipelineContext
 from business.stages.exit_stage import ExitStage
+from business.stages.multi_timeframe_confirmation_stage import MultiTimeframeConfirmationStage
 from business.stages.orb_stage import ORBStage
 from business.stages.qualification_exit_stage import QualificationExitStage
 from business.stages.qualification_stage import QualificationStage
+from business.stages.ut_bot_trend_stage import UTBotTrendStage
 from business.stages.weekly_future_stage import WeeklyFutureStage
 from business.stages.winner_stage import WinnerStage
 from core.enums import AnchorRole, OptionType, TrendDirection
+from core.exceptions import ValidationError
 from core.protocols import IdFactory
 from entry_engine.entry_engine import EntryEngine
 from events.event_bus import EventBus
@@ -80,6 +83,8 @@ from reference_builder.reference_builder import ReferenceBuilder
 from strike_selector.strike_selector import StrikeSelector
 from trade_history.trade_history import TradeHistory
 from trade_manager.trade_manager import TradeManager
+from trend_engine.multi_timeframe_confirmation import MultiTimeframeUTBotConfirmation
+from trend_engine.ut_bot_engine import UTBotEngine
 from weekly_future.weekly_future_calculator import WeeklyFutureCalculator
 from winner_engine.winner_engine import WinnerEngine
 
@@ -143,16 +148,50 @@ class BacktestRunner:
     def __init__(self, id_factory: IdFactory = uuid.uuid4) -> None:
         self._id_factory = id_factory
 
-    def run(self, fixture: BacktestFixture, trend: TrendDirection) -> BacktestResult:
+    def run(
+        self,
+        fixture: BacktestFixture,
+        trend: TrendDirection,
+        underlying_index_candles: tuple[MarketSnapshot, ...] = (),
+    ) -> BacktestResult:
         """Build the reference ladder once, then run the confirmed
         pipeline candle by candle over ``fixture.dataset``.
 
         Args:
             fixture: The candle data to run over.
             trend: The underlying's directional bias for this whole
-                run, supplied by the caller - see module docstring
-                for why this package does not compute it.
+                run, supplied by the caller. Used as-is (unchanged,
+                original behaviour) when ``underlying_index_candles``
+                is empty. Ignored - not even read for the
+                qualification flow - when ``underlying_index_candles``
+                is supplied, since ``UTBotTrendStage``/
+                ``MultiTimeframeConfirmationStage`` compute a real,
+                per-candle trend instead (Product Owner-confirmed
+                2026-08-02 - see those stages' own docstrings for the
+                full evidence trail). The legacy Rule-2/Winner flow
+                does not use ``trend`` at all either way.
+            underlying_index_candles: The underlying index's own OHLC
+                candle series for this session, one entry per
+                ``fixture.dataset.candles`` entry, same order (e.g.
+                from ``backtest.upstox_index_fetcher.fetch_underlying_index_candles``).
+                When non-empty, enables the real UT Bot + 15m/30m/1h
+                multi-timeframe-confirmation trend computation for the
+                qualification flow instead of the static ``trend``
+                argument.
+
+        Raises:
+            core.exceptions.ValidationError: if
+                ``underlying_index_candles`` is non-empty and its
+                length does not match ``fixture.dataset.candles``.
         """
+        if underlying_index_candles and len(underlying_index_candles) != len(
+            fixture.dataset.candles
+        ):
+            raise ValidationError(
+                "BacktestRunner.run: underlying_index_candles must have exactly one entry "
+                "per fixture.dataset.candles entry, in the same order - got "
+                f"{len(underlying_index_candles)} vs {len(fixture.dataset.candles)}."
+            )
         session_id = self._id_factory()
 
         reference_data = ReferenceBuilder().build(session_id, fixture.reference_inputs)
@@ -241,6 +280,15 @@ class BacktestRunner:
 
         qualification_execution = ExecutionContext(mode=ExecutionMode.REPLAY, event_bus=bus)
         qualification_orchestrator = BusinessOrchestrator(qualification_execution)
+        if underlying_index_candles:
+            # Real per-candle trend (Product Owner-confirmed 2026-08-02)
+            # instead of the static `trend` argument - must run before
+            # the QualificationStage entries below, since they read
+            # PipelineContext.trend as an is_ready prerequisite.
+            qualification_orchestrator.register(UTBotTrendStage(UTBotEngine()))
+            qualification_orchestrator.register(
+                MultiTimeframeConfirmationStage(MultiTimeframeUTBotConfirmation())
+            )
         qualification_orchestrator.register(
             QualificationStage(
                 anchor_role=AnchorRole.TOP,
@@ -272,22 +320,26 @@ class BacktestRunner:
 
         business_results: list[BusinessResult] = []
         anchor_ce_candles: list[MarketSnapshot] = []
+        index_candles_so_far: list[MarketSnapshot] = []
         qualification_positions: list[QualifiedPosition] = []
 
-        for candle in fixture.dataset.candles:
+        for index, candle in enumerate(fixture.dataset.candles):
             clock.set(candle.timestamp)
             anchor_pair = next(
                 pair for pair in candle.strikes if pair.strike == fixture.anchor_strike
             )
             anchor_ce_candles.append(anchor_pair.ce)
+            if underlying_index_candles:
+                index_candles_so_far.append(underlying_index_candles[index])
 
             context = PipelineContext(
                 session_id=session_id,
                 candle_timestamp=candle.timestamp,
                 reference_data=reference_data,
                 candles=tuple(anchor_ce_candles),
+                underlying_index_candles=tuple(index_candles_so_far),
                 chain_snapshot=candle.strikes,
-                trend=trend,
+                trend=None if underlying_index_candles else trend,
             )
             legacy_result = legacy_orchestrator.run(context)
             qualification_result = qualification_orchestrator.run(legacy_result.context)

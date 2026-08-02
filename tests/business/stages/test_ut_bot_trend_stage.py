@@ -31,7 +31,9 @@ def _candle(index: int, high: str, low: str, close: str) -> MarketSnapshot:
 
 
 def _context(candles: tuple[MarketSnapshot, ...]) -> PipelineContext:
-    return PipelineContext(session_id=uuid.uuid4(), candle_timestamp=_START, candles=candles)
+    return PipelineContext(
+        session_id=uuid.uuid4(), candle_timestamp=_START, underlying_index_candles=candles
+    )
 
 
 def _stage() -> UTBotTrendStage:

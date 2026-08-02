@@ -6,10 +6,13 @@ import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
+import pytest
+
 from backtest.fixture import BacktestFixture
 from backtest.runner import BacktestRunner
 from backtest.synthetic_data import build_synthetic_fixture
 from core.enums import AnchorRole, ExitReason, TradeDirection, TrendDirection
+from core.exceptions import ValidationError
 from data.option_chain_dataset import OptionChainCandle, OptionChainDataset
 from models.market_snapshot import MarketSnapshot
 from models.strike_chain_snapshot import StrikeChainSnapshot
@@ -345,3 +348,45 @@ class TestQualificationFlowBottomAnchor:
         assert position.side is TradeDirection.CE
         assert position.entry_strike == _TOP
         assert position.exit_reason == ExitReason.TARGET_HIT
+
+
+class TestComputedTrendViaUnderlyingIndexCandles:
+    def test_mismatched_length_raises(self) -> None:
+        fixture = build_synthetic_fixture()
+
+        with pytest.raises(ValidationError, match="underlying_index_candles must have exactly"):
+            BacktestRunner().run(
+                fixture,
+                TrendDirection.BULLISH,
+                underlying_index_candles=(
+                    _snap(fixture.dataset.candles[0].timestamp, Decimal(100), Decimal(101)),
+                ),
+            )
+
+    def test_ut_bot_stages_run_when_underlying_index_candles_supplied(self) -> None:
+        fixture = build_synthetic_fixture()
+        index_candles = tuple(
+            _snap(
+                candle.timestamp,
+                Decimal(24000 + i),
+                Decimal(24001 + i),
+            )
+            for i, candle in enumerate(fixture.dataset.candles)
+        )
+
+        result = BacktestRunner().run(
+            fixture, TrendDirection.BULLISH, underlying_index_candles=index_candles
+        )
+
+        for business_result in result.business_results:
+            assert "ut_bot_trend" in business_result.completed_stages
+            assert "multi_timeframe_confirmation" in business_result.completed_stages
+
+    def test_static_trend_path_unaffected_when_no_underlying_index_candles(self) -> None:
+        fixture = build_synthetic_fixture()
+
+        result = BacktestRunner().run(fixture, TrendDirection.BULLISH)
+
+        for business_result in result.business_results:
+            assert "ut_bot_trend" not in business_result.completed_stages
+            assert "multi_timeframe_confirmation" not in business_result.completed_stages

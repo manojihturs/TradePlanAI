@@ -22,16 +22,13 @@ writing it to ``PipelineContext.trend`` via the same field
 ``business.stages.qualification_stage.QualificationStage`` already
 use.
 
-Reads ``PipelineContext.candles[-1]`` as this candle's underlying
-index OHLC - the caller (the live paper-trading harness) is
-responsible for threading the index's own candle series into that
-field for this stage's purposes, distinct from
-``business.stages.orb_stage.ORBStage``'s own use of the same field
-for the anchor strike's CE stream. This is a real, temporary
-divergence in what ``candles`` holds depending on which stages are
-registered together - acceptable because ``TrendStage``/
-``UTBotTrendStage`` and ``ORBStage`` are never both registered in the
-same orchestrator today; revisit if that changes.
+Reads ``PipelineContext.underlying_index_candles[-1]`` as this
+candle's underlying index OHLC - a field distinct from ``candles``
+(which ``business.stages.orb_stage.ORBStage`` uses for the anchor
+strike's own CE stream instead), added 2026-08-02 specifically to
+avoid the two data sources colliding on one field. The caller is
+responsible for threading the index's own candle series into
+``underlying_index_candles`` each candle.
 """
 
 from __future__ import annotations
@@ -51,11 +48,8 @@ _SIGNAL_TO_TREND = {
 
 class UTBotTrendStage:
     """Runs ``UTBotEngine`` against this candle's underlying index
-    OHLC (constructor-injected per-candle lookup callable, since the
-    underlying index series is a separate data source from
-    ``PipelineContext.chain_snapshot``'s per-strike option data), and
-    updates ``PipelineContext.trend`` from the engine's persisted
-    Buy/Sell position.
+    OHLC, and updates ``PipelineContext.trend`` from the engine's
+    persisted Buy/Sell position.
 
     Constructor-injected engine only - no globals, no singletons.
     Stateful across calls (running ATR/trailing stop/position) by
@@ -71,16 +65,16 @@ class UTBotTrendStage:
 
     def is_ready(self, context: PipelineContext) -> bool:
         """Ready once this candle's underlying index candle has been
-        threaded into ``PipelineContext.candles`` (the caller's own
-        responsibility - see module docstring)."""
-        return len(context.candles) > 0
+        threaded into ``PipelineContext.underlying_index_candles``
+        (the caller's own responsibility - see module docstring)."""
+        return len(context.underlying_index_candles) > 0
 
     def run(self, context: PipelineContext, execution: ExecutionContext) -> StageOutcome:
         """Feed this candle's underlying index OHLC to ``UTBotEngine``
         and update ``PipelineContext.trend`` from its current
         position, if any flip has fired yet."""
         _ = execution
-        index_candle: MarketSnapshot = context.candles[-1]
+        index_candle: MarketSnapshot = context.underlying_index_candles[-1]
         self._engine.update(index_candle)
 
         position = self._engine.current_position

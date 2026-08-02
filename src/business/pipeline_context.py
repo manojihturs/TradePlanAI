@@ -106,6 +106,15 @@ class PipelineContext:
             closed one.
         qualification_exited_position_bottom: The Bottom-anchor
             equivalent of ``qualification_exited_position_top``.
+        underlying_index_candles: The underlying index's own OHLC
+            candle series observed so far this session (distinct from
+            ``candles``, which - depending on which stages are
+            registered - may instead hold an anchor strike's own CE
+            premium stream for ``business.stages.orb_stage.ORBStage``;
+            the two must never be conflated). Added for
+            ``business.stages.ut_bot_trend_stage.UTBotTrendStage`` and
+            ``business.stages.multi_timeframe_confirmation_stage.MultiTimeframeConfirmationStage``,
+            2026-08-02.
         diagnostics: Free-text notes accumulated by stages themselves
             (distinct from :class:`~business.business_result.BusinessResult`'s
             own pipeline-level diagnostics).
@@ -129,6 +138,7 @@ class PipelineContext:
     qualified_position_bottom: QualifiedPosition | None = None
     qualification_exited_position_top: QualifiedPosition | None = None
     qualification_exited_position_bottom: QualifiedPosition | None = None
+    underlying_index_candles: tuple[MarketSnapshot, ...] = field(default_factory=tuple)
     diagnostics: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
@@ -208,3 +218,8 @@ class PipelineContext:
         return replace(
             self, qualification_exited_position_bottom=qualification_exited_position_bottom
         )
+
+    def with_underlying_index_candles(
+        self, underlying_index_candles: tuple[MarketSnapshot, ...]
+    ) -> PipelineContext:
+        return replace(self, underlying_index_candles=underlying_index_candles)
