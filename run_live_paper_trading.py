@@ -1,157 +1,167 @@
-"""Glue script: connects strategy/live_paper_trading.py (Module 11) to the
-REAL live Upstox feed for today's session. NOT part of the strategy/
-package - only the network adapter, per every other module's no-network-
-dependency design. Paper trading only - no real orders are ever placed
-(this script never calls any order-placement endpoint).
+"""Glue script: runs the live paper-trading harness against real
+Upstox data during actual market hours.
+
+Traceability
+------------
+NOT part of src/ - the composition root wiring together
+live_session.live_session_runner.LiveSessionRunner,
+capital_ledger.capital_ledger.CapitalLedger,
+session_scheduler.session_scheduler.SessionScheduler, and
+telegram_notifier.telegram_notifier.TelegramNotifier (optional - runs
+without it if no bot token/chat ID is configured), matching the same
+"glue script" category as run_upstox_backtest.py.
+
+Replaces the prior 2026-07-29 version of this script (built on the
+legacy strategy/ package's own LivePaperTradingEngine/CapitalTracker -
+entry_signal.py/level_capture.py/premium_mapping.py - a separate,
+older rule implementation). Product Owner confirmed 2026-08-02:
+replace it entirely with the src/ package's confirmed pipeline, which
+carries every fix made this session that the legacy path never had
+(Top/Bottom independent trades, real breakeven-first Trailing Stop,
+directional dual-crossover, UT Bot trend, exit-price tracking).
+
+UNTESTED AGAINST A REAL LIVE UPSTOX SESSION. Every piece this wires
+together is unit-tested with fake transports, but nobody has run this
+exact script against a live account during real market hours yet.
+Watch the first session closely.
+
+Requires environment variables:
+- UPSTOX_ACCESS_TOKEN (required) - see tools/upstox_rest_client.py's
+  own docstring; never paste it into this file, a command-line
+  argument, or a chat/AI session.
+- TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID (optional) - if both are set,
+  trade-closed/session-summary/error alerts are sent to Telegram; if
+  either is missing, the harness runs with console output only.
+
+ANCHOR_STRIKE must be set fresh for the actual session being traded
+(the confirmed Top Strike, via the Weekly Future formula) - it is NOT
+computed automatically here, the same manual-edit requirement
+run_upstox_backtest.py already documents.
+
+Stop with Ctrl+C - sends a final session summary (if Telegram is
+configured) before exiting.
 """
 
-import logging
+from __future__ import annotations
+
+import os
 import sys
-import time as systime
-from datetime import date, datetime, time as dtime
+import time
+import traceback
+from datetime import UTC, date, datetime
+from decimal import Decimal
+from pathlib import Path
 
-sys.path.insert(0, r"C:\Code\Trade\TradePlan")
+_SRC = Path(__file__).resolve().parent / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+_TOOLS = Path(__file__).resolve().parent / "tools"
+if str(_TOOLS) not in sys.path:
+    sys.path.insert(0, str(_TOOLS))
 
-import orb_common as oc
-from strategy.entry_signal import Candle as StrategyCandle
-from strategy.level_capture import capture_levels
-from strategy.premium_mapping import build_premium_mapping
-from strategy.live_paper_trading import (
-    CapitalTracker,
-    LivePaperTradingEngine,
-    export_end_of_day_excel,
-)
+from upstox_rest_client import RequestsRestClient, access_token_from_env
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s",
-                     handlers=[logging.StreamHandler(),
-                               logging.FileHandler("live_paper_trading.log")])
-logger = logging.getLogger("live_paper_trading")
+from capital_ledger.capital_ledger import CapitalLedger
+from core.enums import TrendDirection
+from core.exceptions import HistoricalDataError
+from live_session.live_session_runner import LiveSessionRunner
+from session_scheduler.session_scheduler import SessionScheduler
+from telegram_notifier.telegram_notifier import TelegramNotifier
 
-STRIKE_GAP = 50
-NUM_STRIKES = 6
-CAPTURE_TIME = dtime(9, 20)
-SQUARE_OFF = dtime(15, 25)   # last tradeable candle close, matches existing SQUARE_OFF convention
-POLL_SECONDS = 20
+# Edit these for the session being traded.
+UNDERLYING_SYMBOL = "NIFTY"
+EXPIRY = date(2026, 8, 4)  # NIFTY weeklies expire on Tuesdays - verified against real Upstox data
+ANCHOR_STRIKE = Decimal(24250)  # MUST be set fresh - the confirmed Top Strike for SESSION_DATE
+SESSION_DATE = date(2026, 8, 3)
+STARTING_CAPITAL = Decimal(50000)
+POLL_INTERVAL_SECONDS = 300  # matches the 5-minute candle size used throughout the pipeline
 
 
-def wait_until(target_time: dtime) -> None:
-    while True:
-        now = datetime.now(oc.IST).time()
-        if now >= target_time:
-            return
-        systime.sleep(5)
+def _build_notifier(rest_client: RequestsRestClient) -> TelegramNotifier | None:
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not bot_token or not chat_id:
+        print("TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not set - running with console output only.")
+        return None
+    return TelegramNotifier(bot_token=bot_token, chat_id=chat_id, rest_client=rest_client)
 
 
 def main() -> None:
-    session_date = date.today()
-    logger.info("Market Open: waiting for session %s", session_date)
+    access_token = access_token_from_env()
+    rest_client = RequestsRestClient()
 
-    wait_until(dtime(9, 15))
-    logger.info("Market Open confirmed for %s", session_date)
+    ledger = CapitalLedger(starting_capital=STARTING_CAPITAL)
+    scheduler = SessionScheduler()
+    notifier = _build_notifier(rest_client)
 
-    wait_until(CAPTURE_TIME)
-    logger.info("Opening range window closed (09:20) - beginning capture")
-
-    row = oc.db().execute(
-        "SELECT expiry FROM orb_summary WHERE session_date=?", (session_date.isoformat(),)
-    ).fetchone()
-    if row:
-        expiry = date.fromisoformat(row[0])
-    else:
-        # No pre-existing capture row for today yet - resolve nearest weekly
-        # expiry via the instrument master itself (orb_common.get_nearest_expiry),
-        # the same correct logic orb_auto.py's live path already uses. The
-        # earlier "assume Thursday" guess was wrong (it picked a date with no
-        # 23650 strike listed) - this reads real expiry dates from the master
-        # instead of assuming a weekday.
-        expiry = oc.get_nearest_expiry(session_date)
-    logger.info("Using expiry %s", expiry)
-
-    def fetch_first_candle(strike: int, side: str):
-        chain = oc.resolve_option_chain(expiry, strike, gap=STRIKE_GAP, n=0)
-        instrument_key = chain[(strike, side)]
-        candles_1m = oc.fetch_intraday_candles(instrument_key, 1)
-        first = oc.first_5min_candle(oc.resample(candles_1m, oc.CANDLE_MINUTES), session_date)
-        if first is None:
-            raise RuntimeError(f"no first-5min candle yet for strike {strike} {side}")
-        return (first.open, first.high, first.low, first.close)
-
-    spot_open = oc.get_spot_open_915(session_date)
-    capture = capture_levels(session_date=session_date, spot_open=spot_open, strike_gap=STRIKE_GAP,
-                              num_strikes=NUM_STRIKES, fetch_first_candle=fetch_first_candle)
-    mapping = build_premium_mapping(capture, strike_gap=STRIKE_GAP)
-    logger.info("Top/Bottom Calculated: ATM=%d Top=%.2f (anchor %d) Bottom=%.2f (anchor %d)",
-                capture.atm, capture.top_strike, mapping.top_strike_rounded,
-                capture.bottom_strike, mapping.bottom_strike_rounded)
-
-    capital = CapitalTracker(initial_capital=50_000.0)
-    engine = LivePaperTradingEngine(
-        session_date=session_date, capture=capture, mapping=mapping,
-        strike_gap=STRIKE_GAP, fetch_first_candle=fetch_first_candle, capital=capital,
+    runner = LiveSessionRunner(
+        rest_client=rest_client,
+        access_token=access_token,
+        underlying_symbol=UNDERLYING_SYMBOL,
+        expiry=EXPIRY,
+        anchor_strike=ANCHOR_STRIKE,
+        session_date=SESSION_DATE,
+        trend=TrendDirection.BULLISH,  # unused - UTBotTrendStage computes the real per-candle trend
+        capital_ledger=ledger,
+        scheduler=scheduler,
     )
 
-    strikes = sorted(capture.levels.keys())
-    instrument_keys = {}
-    for strike in strikes:
-        chain = oc.resolve_option_chain(expiry, strike, gap=STRIKE_GAP, n=0)
-        instrument_keys[strike] = {"CE": chain[(strike, "CE")], "PE": chain[(strike, "PE")]}
+    print(
+        f"Live paper trading started: {SESSION_DATE}, anchor={ANCHOR_STRIKE}, "
+        f"capital=Rs.{STARTING_CAPITAL}, poll every {POLL_INTERVAL_SECONDS}s."
+    )
 
-    processed_ts = set()
+    summary_sent = False
+    try:
+        while True:
+            now = datetime.now(UTC)
 
-    logger.info("Beginning live monitoring loop (poll every %ds, until %s)", POLL_SECONDS, SQUARE_OFF)
-    while True:
-        now = datetime.now(oc.IST)
-        if now.time() >= SQUARE_OFF:
-            logger.info("Square-off time reached - stopping live monitoring")
-            break
-
-        try:
-            ce_by_strike = {}
-            pe_by_strike = {}
-            for strike in strikes:
-                ce_1m = oc.fetch_intraday_candles(instrument_keys[strike]["CE"], 1)
-                pe_1m = oc.fetch_intraday_candles(instrument_keys[strike]["PE"], 1)
-                ce_5m = oc.resample(ce_1m, oc.CANDLE_MINUTES)
-                pe_5m = oc.resample(pe_1m, oc.CANDLE_MINUTES)
-                ce_by_strike[strike] = {c.ts: StrategyCandle(c.open, c.high, c.low, c.close) for c in ce_5m}
-                pe_by_strike[strike] = {c.ts: StrategyCandle(c.open, c.high, c.low, c.close) for c in pe_5m}
-
-            all_new_ts = sorted({
-                ts for s in ce_by_strike.values() for ts in s if ts not in processed_ts
-            } | {
-                ts for s in pe_by_strike.values() for ts in s if ts not in processed_ts
-            })
-
-            for ts in all_new_ts:
-                if ts.time() < CAPTURE_TIME:
-                    continue   # never trade on the 09:15 opening-range candle itself
-                ce_candles = {k: v[ts] for k, v in ce_by_strike.items() if ts in v}
-                pe_candles = {k: v[ts] for k, v in pe_by_strike.items() if ts in v}
-                engine.on_candle_close(ts, ce_candles, pe_candles)
-                processed_ts.add(ts)
+            if not scheduler.is_session_open(now):
+                if (
+                    not summary_sent
+                    and scheduler.is_trading_day(now)
+                    and now.time() >= scheduler.market_close
+                ):
+                    print(
+                        f"Session closed. Trades={ledger.trade_count} "
+                        f"P&L=Rs.{ledger.realized_pnl} Balance=Rs.{ledger.balance}"
+                    )
+                    if notifier is not None:
+                        notifier.notify_session_summary(SESSION_DATE, ledger)
+                    summary_sent = True
+                    break
+                time.sleep(POLL_INTERVAL_SECONDS)
+                continue
 
             try:
-                spot_price = oc.get_spot_ltp()
-            except Exception:
-                spot_price = None
-            snap = engine.dashboard_snapshot(now, spot_price)
-            logger.info(
-                "DASHBOARD time=%s spot=%s top=%d bottom=%d open_trade=%s avail_capital=%.2f "
-                "running_pnl=%.2f trades=%d win%%=%.1f open_positions=%d",
-                snap.current_time.strftime("%H:%M:%S"), snap.spot_price, snap.top_strike, snap.bottom_strike,
-                (f"{snap.current_open_trade.side.value}@{snap.current_open_trade.strike}"
-                 if snap.current_open_trade else "none"),
-                snap.available_capital, snap.running_pnl, snap.todays_trades, snap.win_pct,
-                snap.open_positions,
-            )
-        except Exception as exc:
-            logger.error("Poll iteration failed (continuing): %s", exc)
+                result = runner.poll_once(now)
+                for position in result.newly_closed_positions:
+                    reason = position.exit_reason.value if position.exit_reason else "-"
+                    print(
+                        f"CLOSED: {position.anchor_role.value} {position.side.value} "
+                        f"@{position.entry_strike} entry={position.entry_level} "
+                        f"exit={position.exit_price} reason={reason}"
+                    )
+                    if notifier is not None:
+                        notifier.notify_trade_closed(position)
+            except HistoricalDataError as exc:
+                print(f"POLL ERROR: {exc}")
+                if notifier is not None:
+                    notifier.notify_error(str(exc))
+            except Exception:  # noqa: BLE001 - a live trading loop must not die on one bad poll
+                print("UNEXPECTED POLL ERROR:")
+                traceback.print_exc()
+                if notifier is not None:
+                    notifier.notify_error("Unexpected error - see console/logs.")
 
-        systime.sleep(POLL_SECONDS)
-
-    logger.info(engine.end_of_day_summary())
-    out_path = export_end_of_day_excel(engine, f"live_paper_trading_{session_date.isoformat()}.xlsx")
-    logger.info("End-of-day report exported to %s", out_path)
+            time.sleep(POLL_INTERVAL_SECONDS)
+    except KeyboardInterrupt:
+        print(
+            f"\nStopped by user. Trades={ledger.trade_count} "
+            f"P&L=Rs.{ledger.realized_pnl} Balance=Rs.{ledger.balance}"
+        )
+        if notifier is not None:
+            notifier.notify_session_summary(SESSION_DATE, ledger)
 
 
 if __name__ == "__main__":
