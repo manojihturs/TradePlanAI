@@ -93,13 +93,17 @@ class QualificationExitEngine:
             )
 
         if self._touches(own_snapshot, position.target_level):
-            return self._position_manager.close(ExitReason.TARGET_HIT)
+            return self._position_manager.close(ExitReason.TARGET_HIT, position.target_level)
         if self._touches(competitor_snapshot, position.competitor_exit_level):
-            return self._position_manager.close(ExitReason.COMPETITOR_HIT)
+            return self._position_manager.close(
+                ExitReason.COMPETITOR_HIT, position.competitor_exit_level
+            )
         if self._touches(own_snapshot, position.stop_loss_level):
-            return self._position_manager.close(ExitReason.STOP_LOSS)
+            return self._position_manager.close(ExitReason.STOP_LOSS, position.stop_loss_level)
         if self._trailing_stop.check(position, own_snapshot):
-            return self._position_manager.close(ExitReason.TRAILING_STOP)
+            return self._position_manager.close(
+                ExitReason.TRAILING_STOP, self._trailing_stop.current_trail_level
+            )
         _ = candle_timestamp  # unused directly - see docstring
         return None
 

@@ -85,20 +85,63 @@ def test_closed_without_closed_at_raises() -> None:
         _make(status=TradeState.TRADE_CLOSED, exit_reason=ExitReason.TARGET_HIT)
 
 
+def test_active_with_exit_price_raises() -> None:
+    with pytest.raises(
+        ValidationError, match="active QualifiedPosition must not have an exit_price"
+    ):
+        _make(status=TradeState.TRADE_ACTIVE, exit_price=Decimal("145.2"))
+
+
+def test_session_end_with_exit_price_raises() -> None:
+    with pytest.raises(
+        ValidationError, match="SESSION_END QualifiedPosition must not have an exit_price"
+    ):
+        _make(
+            status=TradeState.TRADE_CLOSED,
+            exit_reason=ExitReason.SESSION_END,
+            closed_at=datetime(2026, 7, 30, 15, 30, 0, tzinfo=UTC),
+            exit_price=Decimal("145.2"),
+        )
+
+
+def test_closed_without_exit_price_raises() -> None:
+    with pytest.raises(ValidationError, match="closed QualifiedPosition must have an exit_price"):
+        _make(
+            status=TradeState.TRADE_CLOSED,
+            exit_reason=ExitReason.TARGET_HIT,
+            closed_at=datetime(2026, 7, 30, 9, 40, 0, tzinfo=UTC),
+        )
+
+
+def test_non_positive_exit_price_raises() -> None:
+    with pytest.raises(ValidationError, match="exit_price must be greater than 0"):
+        _make(
+            status=TradeState.TRADE_CLOSED,
+            exit_reason=ExitReason.TARGET_HIT,
+            closed_at=datetime(2026, 7, 30, 9, 40, 0, tzinfo=UTC),
+            exit_price=Decimal(0),
+        )
+
+
 class TestClose:
     def test_close_returns_new_closed_instance(self) -> None:
         position = _make()
         closed_at = datetime(2026, 7, 30, 9, 45, 0, tzinfo=UTC)
-        closed = position.close(ExitReason.TARGET_HIT, closed_at)
+        closed = position.close(ExitReason.TARGET_HIT, closed_at, Decimal("145.2"))
 
         assert position.is_active() is True  # original untouched
         assert closed.is_active() is False
         assert closed.exit_reason == ExitReason.TARGET_HIT
         assert closed.closed_at == closed_at
+        assert closed.exit_price == Decimal("145.2")
         assert closed.position_id == position.position_id
 
     def test_close_already_closed_raises(self) -> None:
         position = _make()
-        closed = position.close(ExitReason.TARGET_HIT, datetime(2026, 7, 30, 9, 45, 0, tzinfo=UTC))
+        closed = position.close(
+            ExitReason.TARGET_HIT, datetime(2026, 7, 30, 9, 45, 0, tzinfo=UTC), Decimal("145.2")
+        )
         with pytest.raises(ValidationError, match="is already closed"):
-            closed.close(ExitReason.STOP_LOSS, datetime(2026, 7, 30, 9, 50, 0, tzinfo=UTC))
+            closed.close(
+                ExitReason.STOP_LOSS, datetime(2026, 7, 30, 9, 50, 0, tzinfo=UTC), Decimal("98.3")
+            )

@@ -82,6 +82,14 @@ class QualificationTrailingStop(Protocol):
         Stop, given ``snapshot``."""
         ...  # pragma: no cover
 
+    @property
+    def current_trail_level(self) -> Decimal | None:
+        """The most recently computed trail level, or ``None`` if the
+        trail has never activated - see
+        ``BreakevenFirstQualificationTrailingStop``'s own docstring
+        for why this is needed."""
+        ...  # pragma: no cover
+
 
 class BreakevenFirstQualificationTrailingStop:
     """Confirmed, real Trailing Stop: breakeven-first activation at
@@ -93,6 +101,21 @@ class BreakevenFirstQualificationTrailingStop:
     def __init__(self) -> None:
         self._tracked_position_id: uuid.UUID | None = None
         self._high_water: Decimal | None = None
+        self._last_trail_level: Decimal | None = None
+
+    @property
+    def current_trail_level(self) -> Decimal | None:
+        """The most recently computed trail level for whichever
+        position was last checked, or ``None`` if the trail has never
+        activated (still below the +3-point minimum) - the actual
+        fill price a Trailing Stop exit closed at, needed by
+        ``qualification_engine.qualification_exit_engine.QualificationExitEngine``
+        to record :attr:`~models.qualified_position.QualifiedPosition.exit_price`
+        (2026-08-02, unlike Target/Stop Loss/Competitor Exit, whose
+        exit price is always one of the position's own fixed levels,
+        Trailing Stop's exit price is dynamic and was previously not
+        captured anywhere)."""
+        return self._last_trail_level
 
     def check(self, position: QualifiedPosition, snapshot: MarketSnapshot) -> bool:
         assert snapshot.low is not None and snapshot.high is not None
@@ -120,6 +143,7 @@ class BreakevenFirstQualificationTrailingStop:
             if position.side is TradeDirection.CE
             else position.entry_level - trail_offset
         )
+        self._last_trail_level = trail_level
         return snapshot.low <= trail_level <= snapshot.high
 
 
@@ -134,3 +158,7 @@ class NeverTriggersQualificationTrailingStop:
     def check(self, position: QualifiedPosition, snapshot: MarketSnapshot) -> bool:
         _ = (position, snapshot)  # unused - see module docstring
         return False
+
+    @property
+    def current_trail_level(self) -> Decimal | None:
+        return None

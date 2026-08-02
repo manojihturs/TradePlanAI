@@ -22,6 +22,7 @@ not a per-candle exit condition.
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 
 from core.enums import ExitReason
 from core.events import QualificationClosedEvent, QualificationOpenedEvent
@@ -95,8 +96,14 @@ class QualificationPositionManager:
             )
         return position
 
-    def close(self, reason: ExitReason) -> QualifiedPosition:
+    def close(self, reason: ExitReason, exit_price: Decimal | None = None) -> QualifiedPosition:
         """Close the active trade.
+
+        Args:
+            reason: Why the trade closed.
+            exit_price: The actual premium level closed at - required
+                unless ``reason`` is ``SESSION_END`` (see
+                :meth:`~models.qualified_position.QualifiedPosition.close`).
 
         Returns:
             The now-closed :class:`~models.qualified_position.QualifiedPosition`.
@@ -108,7 +115,7 @@ class QualificationPositionManager:
         if self._active is None:
             raise TradeManagerError("No active qualified trade to close.")
 
-        closed = self._active.close(reason, self._clock())
+        closed = self._active.close(reason, self._clock(), exit_price)
         self._active = None
         if self._bus is not None:
             self._bus.publish(

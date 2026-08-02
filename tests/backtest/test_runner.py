@@ -380,7 +380,10 @@ class TestComputedTrendViaUnderlyingIndexCandles:
 
         for business_result in result.business_results:
             assert "ut_bot_trend" in business_result.completed_stages
-            assert "multi_timeframe_confirmation" in business_result.completed_stages
+            # MultiTimeframeConfirmationStage is deliberately NOT wired
+            # in - backtested and dropped (2026-08-02): "all 3 agree"
+            # produced zero trades across a full week of real data.
+            assert "multi_timeframe_confirmation" not in business_result.completed_stages
 
     def test_static_trend_path_unaffected_when_no_underlying_index_candles(self) -> None:
         fixture = build_synthetic_fixture()

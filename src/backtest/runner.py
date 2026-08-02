@@ -56,7 +56,6 @@ from business.execution_context import ExecutionContext, ExecutionMode
 from business.orchestrator import BusinessOrchestrator
 from business.pipeline_context import PipelineContext
 from business.stages.exit_stage import ExitStage
-from business.stages.multi_timeframe_confirmation_stage import MultiTimeframeConfirmationStage
 from business.stages.orb_stage import ORBStage
 from business.stages.qualification_exit_stage import QualificationExitStage
 from business.stages.qualification_stage import QualificationStage
@@ -83,7 +82,6 @@ from reference_builder.reference_builder import ReferenceBuilder
 from strike_selector.strike_selector import StrikeSelector
 from trade_history.trade_history import TradeHistory
 from trade_manager.trade_manager import TradeManager
-from trend_engine.multi_timeframe_confirmation import MultiTimeframeUTBotConfirmation
 from trend_engine.ut_bot_engine import UTBotEngine
 from weekly_future.weekly_future_calculator import WeeklyFutureCalculator
 from winner_engine.winner_engine import WinnerEngine
@@ -285,10 +283,18 @@ class BacktestRunner:
             # instead of the static `trend` argument - must run before
             # the QualificationStage entries below, since they read
             # PipelineContext.trend as an is_ready prerequisite.
+            #
+            # MultiTimeframeConfirmationStage (15m/30m/1h, all-must-
+            # agree) is deliberately NOT registered here - backtested
+            # against 27-31 July 2026 real data and produced ZERO
+            # trades all week (a single ~6.25-hour session rarely lets
+            # all three timeframes agree simultaneously). Product Owner
+            # decision (2026-08-02): drop multi-timeframe confirmation
+            # entirely, use the plain 5-minute UTBotTrendStage signal
+            # alone - see research/evidence_log.md for the full trail.
+            # The stage/engine remain implemented and tested in case
+            # this is revisited with a looser agreement rule later.
             qualification_orchestrator.register(UTBotTrendStage(UTBotEngine()))
-            qualification_orchestrator.register(
-                MultiTimeframeConfirmationStage(MultiTimeframeUTBotConfirmation())
-            )
         qualification_orchestrator.register(
             QualificationStage(
                 anchor_role=AnchorRole.TOP,

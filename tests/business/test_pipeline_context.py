@@ -241,14 +241,18 @@ class TestWithMethods:
         assert context.qualified_position_bottom is position
 
     def test_with_qualification_exited_position_top(self) -> None:
-        position = self._position(anchor_role=AnchorRole.TOP).close(ExitReason.TARGET_HIT, _ts())
+        position = self._position(anchor_role=AnchorRole.TOP).close(
+            ExitReason.TARGET_HIT, _ts(), Decimal("145.2")
+        )
 
         context = _context().with_qualification_exited_position_top(position)
 
         assert context.qualification_exited_position_top is position
 
     def test_with_qualification_exited_position_bottom(self) -> None:
-        position = self._position(anchor_role=AnchorRole.BOTTOM).close(ExitReason.TARGET_HIT, _ts())
+        position = self._position(anchor_role=AnchorRole.BOTTOM).close(
+            ExitReason.TARGET_HIT, _ts(), Decimal("145.2")
+        )
 
         context = _context().with_qualification_exited_position_bottom(position)
 

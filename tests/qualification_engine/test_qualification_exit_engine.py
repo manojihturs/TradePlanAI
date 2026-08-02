@@ -24,6 +24,10 @@ class _AlwaysTrueTrailingStop:
     def check(self, position: QualifiedPosition, snapshot: MarketSnapshot) -> bool:
         return True
 
+    @property
+    def current_trail_level(self) -> Decimal:
+        return Decimal("130.5")
+
 
 def _candle(low: str, high: str, when: datetime) -> MarketSnapshot:
     return MarketSnapshot(

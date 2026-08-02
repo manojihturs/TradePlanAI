@@ -90,7 +90,7 @@ class TestClose:
         position = manager.open(_make_signal())
         assert position is not None
 
-        closed = manager.close(ExitReason.TARGET_HIT)
+        closed = manager.close(ExitReason.TARGET_HIT, Decimal("145.2"))
 
         assert closed.position_id == position.position_id
         assert closed.is_active() is False
@@ -101,7 +101,7 @@ class TestClose:
     def test_close_without_active_trade_raises(self) -> None:
         manager = QualificationPositionManager()
         with pytest.raises(TradeManagerError, match="No active qualified trade to close"):
-            manager.close(ExitReason.TARGET_HIT)
+            manager.close(ExitReason.TARGET_HIT, Decimal("145.2"))
 
     def test_close_publishes_qualification_closed_event(self) -> None:
         bus = EventBus()
@@ -111,7 +111,7 @@ class TestClose:
         position = manager.open(_make_signal())
         assert position is not None
 
-        manager.close(ExitReason.STOP_LOSS)
+        manager.close(ExitReason.STOP_LOSS, Decimal("98.3"))
 
         assert len(received) == 1
         assert received[0].position_id == position.position_id
@@ -120,14 +120,14 @@ class TestClose:
     def test_close_without_bus_does_not_raise(self) -> None:
         manager = QualificationPositionManager(bus=None)
         manager.open(_make_signal())
-        manager.close(ExitReason.TARGET_HIT)  # must not raise
+        manager.close(ExitReason.TARGET_HIT, Decimal("145.2"))  # must not raise
 
 
 class TestNextTradeAfterClose:
     def test_new_trade_allowed_after_close(self) -> None:
         manager = QualificationPositionManager()
         manager.open(_make_signal())
-        manager.close(ExitReason.TARGET_HIT)
+        manager.close(ExitReason.TARGET_HIT, Decimal("145.2"))
 
         second = manager.open(_make_signal(signal_id=uuid.uuid4()))
 
@@ -158,7 +158,7 @@ class TestInjectedClockAndIdFactory:
         manager = QualificationPositionManager(clock=lambda: fixed_time)
         manager.open(_make_signal())
 
-        closed = manager.close(ExitReason.TARGET_HIT)
+        closed = manager.close(ExitReason.TARGET_HIT, Decimal("145.2"))
 
         assert closed.closed_at == fixed_time
 

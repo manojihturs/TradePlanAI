@@ -56,6 +56,9 @@ class TestNeverTriggersQualificationTrailingStop:
     def test_always_returns_false(self) -> None:
         assert NeverTriggersQualificationTrailingStop().check(_position(), _snapshot()) is False
 
+    def test_current_trail_level_is_always_none(self) -> None:
+        assert NeverTriggersQualificationTrailingStop().current_trail_level is None
+
 
 def test_object_without_check_does_not_satisfy_protocol() -> None:
     class NotATrailingStop:
@@ -76,6 +79,7 @@ class TestBreakevenFirstQualificationTrailingStop:
         result = tsl.check(position, _candle("122.90", "123.05"))
 
         assert result is False
+        assert tsl.current_trail_level is None
 
     def test_at_activation_no_pullback_touch_returns_false(self) -> None:
         tsl = BreakevenFirstQualificationTrailingStop()
@@ -96,6 +100,7 @@ class TestBreakevenFirstQualificationTrailingStop:
 
         assert first is False
         assert second is True
+        assert tsl.current_trail_level == Decimal("120.1")
 
     def test_step_ratio_moves_trail_by_2_per_5_favourable_points(self) -> None:
         tsl = BreakevenFirstQualificationTrailingStop()

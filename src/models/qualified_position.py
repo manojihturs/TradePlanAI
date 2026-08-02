@@ -57,6 +57,17 @@ class QualifiedPosition:
         exit_reason: Set only when ``status`` is TRADE_CLOSED.
         opened_at: When the position was opened.
         closed_at: Set only when ``status`` is TRADE_CLOSED.
+        exit_price: The actual premium level this position closed at,
+            set only when ``status`` is TRADE_CLOSED (2026-08-02).
+            For TARGET_HIT/STOP_LOSS/COMPETITOR_HIT this always equals
+            one of ``target_level``/``stop_loss_level``/
+            ``competitor_exit_level`` (fixed levels, known at
+            qualification time); for TRAILING_STOP it is the dynamic
+            trail level at the moment of exit, which is NOT any of
+            those fixed levels and was previously not recorded
+            anywhere on this model. ``None`` for a SESSION_END forced
+            close - no real fill occurred, only ``closed_at`` marks
+            when the session ended.
     """
 
     position_id: uuid.UUID
@@ -71,6 +82,7 @@ class QualifiedPosition:
     status: TradeState = TradeState.TRADE_ACTIVE
     exit_reason: ExitReason | None = None
     closed_at: datetime | None = None
+    exit_price: Decimal | None = None
 
     def __post_init__(self) -> None:
         if self.position_id is None:
@@ -96,24 +108,54 @@ class QualifiedPosition:
                 raise ValidationError("An active QualifiedPosition must not have an exit_reason.")
             if self.closed_at is not None:
                 raise ValidationError("An active QualifiedPosition must not have a closed_at.")
+            if self.exit_price is not None:
+                raise ValidationError("An active QualifiedPosition must not have an exit_price.")
         else:
             if self.exit_reason is None:
                 raise ValidationError("A closed QualifiedPosition must have an exit_reason.")
             if self.closed_at is None:
                 raise ValidationError("A closed QualifiedPosition must have a closed_at.")
+            if self.exit_reason is ExitReason.SESSION_END:
+                if self.exit_price is not None:
+                    raise ValidationError(
+                        "A SESSION_END QualifiedPosition must not have an exit_price - "
+                        "no real fill occurred."
+                    )
+            elif self.exit_price is None:
+                raise ValidationError(
+                    "A closed QualifiedPosition must have an exit_price, unless "
+                    "exit_reason is SESSION_END."
+                )
+            elif self.exit_price <= 0:
+                raise ValidationError("QualifiedPosition.exit_price must be greater than 0.")
 
     def is_active(self) -> bool:
         """Whether this position is still open."""
         return self.status is TradeState.TRADE_ACTIVE
 
-    def close(self, reason: ExitReason, closed_at: datetime) -> QualifiedPosition:
+    def close(
+        self, reason: ExitReason, closed_at: datetime, exit_price: Decimal | None = None
+    ) -> QualifiedPosition:
         """Return a new, closed copy of this position.
 
+        Args:
+            reason: Why this position closed.
+            closed_at: When it closed.
+            exit_price: The actual premium level closed at - required
+                unless ``reason`` is ``SESSION_END`` (see this class's
+                own docstring for ``exit_price``).
+
         Raises:
-            ValidationError: if this position is already closed.
+            ValidationError: if this position is already closed, or
+                ``exit_price``'s presence doesn't match what ``reason``
+                requires (see ``__post_init__``).
         """
         if not self.is_active():
             raise ValidationError(f"QualifiedPosition {self.position_id} is already closed.")
         return replace(
-            self, status=TradeState.TRADE_CLOSED, exit_reason=reason, closed_at=closed_at
+            self,
+            status=TradeState.TRADE_CLOSED,
+            exit_reason=reason,
+            closed_at=closed_at,
+            exit_price=exit_price,
         )
