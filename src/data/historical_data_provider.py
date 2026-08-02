@@ -17,8 +17,12 @@ own schema (``Date``, ``Time``, ``Open``, ``High``, ``Low``, ``Close``,
 ``Volume``) for consistency with that already-proven loader elsewhere
 in this repository - not because of new evidence, and not imported
 from it (see this sprint's Architecture Review: ``trading_engine`` is
-a separate package boundary with an incompatible candle model). An
-optional ``UnderlyingPrice`` column may also be present.
+a separate package boundary with an incompatible candle model).
+Optional ``UnderlyingPrice`` and ``OpenInterest`` columns may also be
+present (``OpenInterest`` added for
+``trend_engine.open_interest_trend_engine.OpenInterestTrendEngine``,
+2026-08-02 - Upstox's v3 historical-candle endpoint returns it as a
+7th element per row for F&O instruments).
 
 Engineering default (not a trading rule, see package docstring):
 ``MarketSnapshot.underlying_price`` defaults to the candle's own
@@ -193,6 +197,19 @@ class HistoricalDataProvider:
         underlying_raw = row.get("UnderlyingPrice", "").strip()
         underlying_price = Decimal(underlying_raw) if underlying_raw else close
 
+        open_interest_raw = row.get("OpenInterest", "").strip()
+        try:
+            open_interest = int(open_interest_raw) if open_interest_raw else None
+        except ValueError as exc:
+            issues.append(
+                HistoricalDataIssue(
+                    kind=HistoricalDataIssueKind.SCHEMA_ERROR,
+                    detail=f"Could not parse numeric field: {exc}",
+                    row_number=row_number,
+                )
+            )
+            return None
+
         try:
             return MarketSnapshot(
                 timestamp=timestamp,
@@ -202,6 +219,7 @@ class HistoricalDataProvider:
                 low=low,
                 close=close,
                 volume=volume,
+                open_interest=open_interest,
             )
         except ValidationError as exc:
             kind = (

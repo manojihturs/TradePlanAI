@@ -78,8 +78,37 @@ class TestValidPayload:
                 "Low": "99.0",
                 "Close": "102.5",
                 "Volume": "1000",
+                "OpenInterest": "50",
             }
         ]
+
+    def test_row_without_open_interest_omits_the_key(self) -> None:
+        payload = {
+            "data": {
+                "candles": [
+                    ["2026-07-30T09:15:00+05:30", 100.0, 105.0, 99.0, 102.5, 1000.0],
+                ]
+            }
+        }
+        source, _ = _source(payload)
+
+        rows = list(source.read_rows())
+
+        assert "OpenInterest" not in rows[0]
+
+    def test_row_with_null_open_interest_omits_the_key(self) -> None:
+        payload = {
+            "data": {
+                "candles": [
+                    ["2026-07-30T09:15:00+05:30", 100.0, 105.0, 99.0, 102.5, 1000.0, None],
+                ]
+            }
+        }
+        source, _ = _source(payload)
+
+        rows = list(source.read_rows())
+
+        assert "OpenInterest" not in rows[0]
 
     def test_multiple_rows_preserve_order(self) -> None:
         payload = {

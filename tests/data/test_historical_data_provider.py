@@ -76,6 +76,22 @@ class TestSuccessfulLoad:
 
         assert dataset.snapshots[0].underlying_price == 24050
 
+    def test_open_interest_defaults_to_none(self) -> None:
+        provider = HistoricalDataProvider()
+        source = _FakeSource([_row()])
+
+        dataset = provider.load(source, symbol="NIFTY", timeframe="1m")
+
+        assert dataset.snapshots[0].open_interest is None
+
+    def test_open_interest_column_is_used_when_present(self) -> None:
+        provider = HistoricalDataProvider()
+        source = _FakeSource([_row(OpenInterest="123456")])
+
+        dataset = provider.load(source, symbol="NIFTY", timeframe="1m")
+
+        assert dataset.snapshots[0].open_interest == 123456
+
     def test_tzinfo_is_applied(self) -> None:
         provider = HistoricalDataProvider()
         source = _FakeSource([_row()])
@@ -154,6 +170,12 @@ class TestUnparsableNumericField:
     def test_non_integer_volume_is_schema_error(self) -> None:
         provider = HistoricalDataProvider()
         validation = provider.validate(_FakeSource([_row(volume="1000.5")]))
+
+        assert validation.issues[0].kind is HistoricalDataIssueKind.SCHEMA_ERROR
+
+    def test_non_integer_open_interest_is_schema_error(self) -> None:
+        provider = HistoricalDataProvider()
+        validation = provider.validate(_FakeSource([_row(OpenInterest="not-a-number")]))
 
         assert validation.issues[0].kind is HistoricalDataIssueKind.SCHEMA_ERROR
 

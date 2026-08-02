@@ -115,7 +115,7 @@ class UpstoxCandleSource:
             row[5],
         )
         timestamp = datetime.fromisoformat(str(timestamp_str))
-        return {
+        result = {
             "Date": timestamp.date().isoformat(),
             "Time": timestamp.strftime("%H:%M:%S"),
             "Open": str(open_),
@@ -124,3 +124,9 @@ class UpstoxCandleSource:
             "Close": str(close),
             "Volume": str(int(float(volume))),
         }
+        # Upstox's v3 historical-candle endpoint returns a 7th element
+        # (Open Interest) for F&O instruments - optional, since it's
+        # absent for equity/index instruments and older API versions.
+        if len(row) >= 7 and row[6] is not None:
+            result["OpenInterest"] = str(int(float(row[6])))
+        return result
