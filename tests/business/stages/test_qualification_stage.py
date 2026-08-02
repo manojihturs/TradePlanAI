@@ -95,9 +95,11 @@ def _context(
     )
 
 
-def _stage() -> QualificationStage:
+def _stage(anchor_role: AnchorRole = AnchorRole.TOP) -> QualificationStage:
     return QualificationStage(
-        qualification_engine=QualificationEngine(), position_manager=QualificationPositionManager()
+        anchor_role=anchor_role,
+        qualification_engine=QualificationEngine(),
+        position_manager=QualificationPositionManager(),
     )
 
 
@@ -163,10 +165,10 @@ class TestRun:
 
         outcome = stage.run(context, execution)
 
-        assert outcome.context.qualified_position is None
+        assert outcome.context.qualified_position_top is None
 
     def test_top_ce_qualification_opens_position(self) -> None:
-        stage = _stage()
+        stage = _stage(AnchorRole.TOP)
         execution = ExecutionContext(mode=ExecutionMode.REPLAY)
         context = _context(
             _reference_data(),
@@ -177,13 +179,44 @@ class TestRun:
 
         outcome = stage.run(context, execution)
 
-        assert outcome.context.qualified_position is not None
-        assert outcome.context.qualified_position.side is TradeDirection.CE
-        assert outcome.context.qualified_position.anchor_role is AnchorRole.TOP
-        assert outcome.context.qualified_position.target_level == Decimal("145.2")
+        assert outcome.context.qualified_position_top is not None
+        assert outcome.context.qualified_position_top.side is TradeDirection.CE
+        assert outcome.context.qualified_position_top.anchor_role is AnchorRole.TOP
+        assert outcome.context.qualified_position_top.target_level == Decimal("145.2")
+
+    def test_bottom_qualification_writes_to_bottom_field(self) -> None:
+        stage = _stage(AnchorRole.BOTTOM)
+        execution = ExecutionContext(mode=ExecutionMode.REPLAY)
+        below_bottom = Decimal(24150)
+        reference_data = _reference_data() + (
+            ReferenceLevel(
+                strike=below_bottom,
+                ce_high=Decimal("170.0"),
+                ce_low=Decimal("130.0"),
+                pe_high=Decimal("113.6"),
+                pe_low=Decimal("80.3"),
+            ),
+        )
+        context = _context(
+            reference_data,
+            (
+                StrikeChainSnapshot(strike=_TOP, ce=_no_touch(), pe=_no_touch()),
+                StrikeChainSnapshot(
+                    strike=_BOTTOM, ce=_candle(Decimal("131.6")), pe=_candle(Decimal("110.3"))
+                ),
+            ),
+            _selected_strike(),
+            TrendDirection.BEARISH,
+        )
+
+        outcome = stage.run(context, execution)
+
+        assert outcome.context.qualified_position_bottom is not None
+        assert outcome.context.qualified_position_bottom.anchor_role is AnchorRole.BOTTOM
+        assert outcome.context.qualified_position_top is None
 
     def test_missing_top_in_chain_snapshot_raises(self) -> None:
-        stage = _stage()
+        stage = _stage(AnchorRole.TOP)
         execution = ExecutionContext(mode=ExecutionMode.REPLAY)
         context = _context(
             _reference_data(),
@@ -197,7 +230,7 @@ class TestRun:
 
     def test_second_qualification_while_active_does_not_open_new_position(self) -> None:
         manager = QualificationPositionManager()
-        stage = QualificationStage(QualificationEngine(), manager)
+        stage = QualificationStage(AnchorRole.TOP, QualificationEngine(), manager)
         execution = ExecutionContext(mode=ExecutionMode.REPLAY)
         context = _context(
             _reference_data(),
@@ -206,11 +239,11 @@ class TestRun:
             TrendDirection.BULLISH,
         )
         first = stage.run(context, execution)
-        assert first.context.qualified_position is not None
+        assert first.context.qualified_position_top is not None
 
         second = stage.run(context, execution)
 
-        assert second.context.qualified_position is None
+        assert second.context.qualified_position_top is None
 
 
 class TestBusinessPipelineIntegration:
@@ -228,7 +261,7 @@ class TestBusinessPipelineIntegration:
         result = orchestrator.run(context)
 
         assert result.success is True
-        assert result.completed_stages == ("qualification",)
+        assert result.completed_stages == ("qualification_top",)
 
     def test_stage_fault_is_absorbed_into_business_result_not_raised(self) -> None:
         execution = ExecutionContext(mode=ExecutionMode.REPLAY)

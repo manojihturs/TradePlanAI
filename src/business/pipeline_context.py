@@ -86,16 +86,26 @@ class PipelineContext:
             field exists purely so a caller who *does* have a trend
             value can feed it into the qualification pipeline, not to
             imply this package computes it.
-        qualified_position: The
+        qualified_position_top: The Top-anchor
             :class:`~models.qualified_position.QualifiedPosition`
-            opened this candle, if
+            opened this candle, if a Top-scoped
             ``business.stages.qualification_stage.QualificationStage``
-            opened one (Sprint 11, QUAL-007 resolved).
-        qualification_exited_position: The
+            opened one. Split from Bottom (2026-08-01) because Top and
+            Bottom are confirmed to each hold their own independent
+            active trade simultaneously (Product Owner-confirmed,
+            evidenced by real overlapping trades in
+            ``research/incoming/daily_data_2026-07-31.md``) - a single
+            shared field/position-manager was a modelling error, not a
+            business rule.
+        qualified_position_bottom: The Bottom-anchor equivalent of
+            ``qualified_position_top``.
+        qualification_exited_position_top: The Top-anchor
             :class:`~models.qualified_position.QualifiedPosition`
-            closed this candle, if
+            closed this candle, if a Top-scoped
             ``business.stages.qualification_exit_stage.QualificationExitStage``
-            closed one (Sprint 11).
+            closed one.
+        qualification_exited_position_bottom: The Bottom-anchor
+            equivalent of ``qualification_exited_position_top``.
         diagnostics: Free-text notes accumulated by stages themselves
             (distinct from :class:`~business.business_result.BusinessResult`'s
             own pipeline-level diagnostics).
@@ -115,8 +125,10 @@ class PipelineContext:
     chain_snapshot: tuple[StrikeChainSnapshot, ...] = field(default_factory=tuple)
     exited_position: TradePosition | None = None
     trend: TrendDirection | None = None
-    qualified_position: QualifiedPosition | None = None
-    qualification_exited_position: QualifiedPosition | None = None
+    qualified_position_top: QualifiedPosition | None = None
+    qualified_position_bottom: QualifiedPosition | None = None
+    qualification_exited_position_top: QualifiedPosition | None = None
+    qualification_exited_position_bottom: QualifiedPosition | None = None
     diagnostics: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
@@ -170,10 +182,24 @@ class PipelineContext:
     def with_trend(self, trend: TrendDirection) -> PipelineContext:
         return replace(self, trend=trend)
 
-    def with_qualified_position(self, qualified_position: QualifiedPosition) -> PipelineContext:
-        return replace(self, qualified_position=qualified_position)
-
-    def with_qualification_exited_position(
-        self, qualification_exited_position: QualifiedPosition
+    def with_qualified_position_top(
+        self, qualified_position_top: QualifiedPosition
     ) -> PipelineContext:
-        return replace(self, qualification_exited_position=qualification_exited_position)
+        return replace(self, qualified_position_top=qualified_position_top)
+
+    def with_qualified_position_bottom(
+        self, qualified_position_bottom: QualifiedPosition
+    ) -> PipelineContext:
+        return replace(self, qualified_position_bottom=qualified_position_bottom)
+
+    def with_qualification_exited_position_top(
+        self, qualification_exited_position_top: QualifiedPosition
+    ) -> PipelineContext:
+        return replace(self, qualification_exited_position_top=qualification_exited_position_top)
+
+    def with_qualification_exited_position_bottom(
+        self, qualification_exited_position_bottom: QualifiedPosition
+    ) -> PipelineContext:
+        return replace(
+            self, qualification_exited_position_bottom=qualification_exited_position_bottom
+        )

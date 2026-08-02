@@ -9,7 +9,7 @@ from decimal import Decimal
 from backtest.fixture import BacktestFixture
 from backtest.runner import BacktestRunner
 from backtest.synthetic_data import build_synthetic_fixture
-from core.enums import ExitReason, TradeDirection, TrendDirection
+from core.enums import AnchorRole, ExitReason, TradeDirection, TrendDirection
 from data.option_chain_dataset import OptionChainCandle, OptionChainDataset
 from models.market_snapshot import MarketSnapshot
 from models.strike_chain_snapshot import StrikeChainSnapshot
@@ -80,8 +80,10 @@ class TestBacktestRunner:
             assert "weekly_future" in business_result.completed_stages
             assert "winner" in business_result.completed_stages
             assert "exit" in business_result.completed_stages
-            assert "qualification" in business_result.completed_stages
-            assert "qualification_exit" in business_result.completed_stages
+            assert "qualification_top" in business_result.completed_stages
+            assert "qualification_bottom" in business_result.completed_stages
+            assert "qualification_exit_top" in business_result.completed_stages
+            assert "qualification_exit_bottom" in business_result.completed_stages
 
 
 _ANCHOR = Decimal(24000)
@@ -236,8 +238,8 @@ class TestQualificationIndependentOfLegacyFlowFaults:
         # position on the SAME candle, unaffected.
         assert len(result.qualification_positions) == 1
         assert result.qualification_positions[0].entry_strike == _TOP
-        assert "qualification" in result.business_results[0].completed_stages
-        assert "qualification_exit" in result.business_results[0].completed_stages
+        assert "qualification_top" in result.business_results[0].completed_stages
+        assert "qualification_exit_top" in result.business_results[0].completed_stages
 
 
 class TestQualificationFlow:
@@ -272,3 +274,74 @@ class TestQualificationFlow:
 
         assert len(result.qualification_positions) == 1
         assert result.qualification_positions[0].exit_reason == ExitReason.SESSION_END
+
+
+# Bottom Strike == _TOP in this fixture's reference data (see comment
+# above _TOP), so a Bottom-anchor trade is monitored at the same
+# strike but via BOTTOM/CE's own column mapping (entry=pe_high,
+# confirm=ce_low), numerically distinct from Top/CE's own columns
+# (entry=pe_low, confirm=ce_high) - proving the two anchors are
+# genuinely independent, not just aliased onto the same trade.
+_BOTTOM_ENTRY_LEVEL = Decimal(100) - _TOP_OFFSET  # 99 (pe_high @ offset +1)
+_BOTTOM_CONFIRM_LEVEL = Decimal(130) + _TOP_OFFSET  # 131 (ce_low @ offset +1)
+_BOTTOM_TARGET_LEVEL = Decimal(100) - (_TOP_OFFSET + 1)  # 98 (pe_high, next higher strike)
+
+
+def _bottom_entry_candle() -> OptionChainCandle:
+    pairs = [
+        StrikeChainSnapshot(
+            strike=_TOP,
+            ce=_snap(
+                _ENTRY_TIME,
+                _BOTTOM_ENTRY_LEVEL - Decimal("0.1"),
+                _BOTTOM_ENTRY_LEVEL + Decimal("0.1"),
+            ),
+            pe=_snap(
+                _ENTRY_TIME,
+                _BOTTOM_CONFIRM_LEVEL - Decimal("0.1"),
+                _BOTTOM_CONFIRM_LEVEL + Decimal("0.1"),
+            ),
+        )
+    ]
+    pairs.extend(_no_touch_pair(s, _ENTRY_TIME) for s in _strikes() if s != _TOP)
+    return OptionChainCandle(timestamp=_ENTRY_TIME, strikes=tuple(pairs))
+
+
+def _bottom_target_hit_candle() -> OptionChainCandle:
+    pairs = [
+        StrikeChainSnapshot(
+            strike=_TOP,
+            ce=_snap(
+                _EXIT_TIME,
+                _BOTTOM_TARGET_LEVEL - Decimal("0.1"),
+                _BOTTOM_TARGET_LEVEL + Decimal("0.1"),
+            ),
+            pe=_snap(_EXIT_TIME, Decimal(1), Decimal(2)),
+        )
+    ]
+    pairs.extend(_no_touch_pair(s, _EXIT_TIME) for s in _strikes() if s != _TOP)
+    return OptionChainCandle(timestamp=_EXIT_TIME, strikes=tuple(pairs))
+
+
+class TestQualificationFlowBottomAnchor:
+    def test_bottom_qualification_position_closes_via_target_mid_run(self) -> None:
+        fixture = BacktestFixture(
+            session_date=date(2026, 7, 30),
+            anchor_strike=_ANCHOR,
+            reference_inputs=_reference_inputs(),
+            dataset=OptionChainDataset(
+                session_date=date(2026, 7, 30),
+                candles=(_bottom_entry_candle(), _bottom_target_hit_candle()),
+            ),
+        )
+
+        result = BacktestRunner().run(fixture, TrendDirection.BULLISH)
+
+        bottom_positions = [
+            p for p in result.qualification_positions if p.anchor_role is AnchorRole.BOTTOM
+        ]
+        assert len(bottom_positions) == 1
+        position = bottom_positions[0]
+        assert position.side is TradeDirection.CE
+        assert position.entry_strike == _TOP
+        assert position.exit_reason == ExitReason.TARGET_HIT

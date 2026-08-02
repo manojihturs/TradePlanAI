@@ -61,7 +61,7 @@ from business.stages.qualification_exit_stage import QualificationExitStage
 from business.stages.qualification_stage import QualificationStage
 from business.stages.weekly_future_stage import WeeklyFutureStage
 from business.stages.winner_stage import WinnerStage
-from core.enums import OptionType, TrendDirection
+from core.enums import AnchorRole, OptionType, TrendDirection
 from core.protocols import IdFactory
 from entry_engine.entry_engine import EntryEngine
 from events.event_bus import EventBus
@@ -181,12 +181,26 @@ class BacktestRunner:
             trade_history=trade_history,
         )
 
+        # Top and Bottom each get their own QualificationEngine
+        # collaborators - confirmed 2026-08-01 (Product Owner: "Yes,
+        # one Top + one Bottom max at a time") - a single shared
+        # position manager across both anchors was a modelling error
+        # that silently starved Bottom of entries whenever Top
+        # happened to qualify first (see QualificationStage's own
+        # docstring for the full evidence trail).
         qualification_engine = QualificationEngine(id_factory=self._id_factory)
-        qualification_position_manager = QualificationPositionManager(
+        top_qualification_position_manager = QualificationPositionManager(
             bus=bus, clock=clock, id_factory=self._id_factory
         )
-        qualification_exit_engine = QualificationExitEngine(
-            position_manager=qualification_position_manager,
+        bottom_qualification_position_manager = QualificationPositionManager(
+            bus=bus, clock=clock, id_factory=self._id_factory
+        )
+        top_qualification_exit_engine = QualificationExitEngine(
+            position_manager=top_qualification_position_manager,
+            trailing_stop=NeverTriggersQualificationTrailingStop(),
+        )
+        bottom_qualification_exit_engine = QualificationExitEngine(
+            position_manager=bottom_qualification_position_manager,
             trailing_stop=NeverTriggersQualificationTrailingStop(),
         )
 
@@ -229,14 +243,30 @@ class BacktestRunner:
         qualification_orchestrator = BusinessOrchestrator(qualification_execution)
         qualification_orchestrator.register(
             QualificationStage(
+                anchor_role=AnchorRole.TOP,
                 qualification_engine=qualification_engine,
-                position_manager=qualification_position_manager,
+                position_manager=top_qualification_position_manager,
+            )
+        )
+        qualification_orchestrator.register(
+            QualificationStage(
+                anchor_role=AnchorRole.BOTTOM,
+                qualification_engine=qualification_engine,
+                position_manager=bottom_qualification_position_manager,
             )
         )
         qualification_orchestrator.register(
             QualificationExitStage(
-                exit_engine=qualification_exit_engine,
-                position_manager=qualification_position_manager,
+                anchor_role=AnchorRole.TOP,
+                exit_engine=top_qualification_exit_engine,
+                position_manager=top_qualification_position_manager,
+            )
+        )
+        qualification_orchestrator.register(
+            QualificationExitStage(
+                anchor_role=AnchorRole.BOTTOM,
+                exit_engine=bottom_qualification_exit_engine,
+                position_manager=bottom_qualification_position_manager,
             )
         )
 
@@ -263,12 +293,15 @@ class BacktestRunner:
             qualification_result = qualification_orchestrator.run(legacy_result.context)
             result = self._merge_results(legacy_result, qualification_result)
             business_results.append(result)
-            if result.context.qualification_exited_position is not None:
-                qualification_positions.append(result.context.qualification_exited_position)
+            if result.context.qualification_exited_position_top is not None:
+                qualification_positions.append(result.context.qualification_exited_position_top)
+            if result.context.qualification_exited_position_bottom is not None:
+                qualification_positions.append(result.context.qualification_exited_position_bottom)
 
-        forced_close = qualification_position_manager.force_close_session_end()
-        if forced_close is not None:
-            qualification_positions.append(forced_close)
+        for manager in (top_qualification_position_manager, bottom_qualification_position_manager):
+            forced_close = manager.force_close_session_end()
+            if forced_close is not None:
+                qualification_positions.append(forced_close)
 
         return BacktestResult(
             session_id=session_id,

@@ -54,8 +54,10 @@ class TestConstruction:
         assert context.chain_snapshot == ()
         assert context.exited_position is None
         assert context.trend is None
-        assert context.qualified_position is None
-        assert context.qualification_exited_position is None
+        assert context.qualified_position_top is None
+        assert context.qualified_position_bottom is None
+        assert context.qualification_exited_position_top is None
+        assert context.qualification_exited_position_bottom is None
         assert context.diagnostics == ()
 
     def test_none_session_id_raises(self) -> None:
@@ -201,36 +203,45 @@ class TestWithMethods:
 
         assert context.trend is TrendDirection.BULLISH
 
-    def test_with_qualified_position(self) -> None:
-        position = QualifiedPosition(
-            position_id=uuid.uuid4(),
-            anchor_role=AnchorRole.TOP,
-            side=TradeDirection.CE,
-            entry_strike=Decimal(24250),
-            entry_level=Decimal("120.1"),
-            target_level=Decimal("145.2"),
-            stop_loss_level=Decimal("98.3"),
-            competitor_exit_level=Decimal("121.5"),
-            opened_at=_ts(),
-        )
+    def _position(self, **overrides: object) -> QualifiedPosition:
+        fields: dict[str, object] = {
+            "position_id": uuid.uuid4(),
+            "anchor_role": AnchorRole.TOP,
+            "side": TradeDirection.CE,
+            "entry_strike": Decimal(24250),
+            "entry_level": Decimal("120.1"),
+            "target_level": Decimal("145.2"),
+            "stop_loss_level": Decimal("98.3"),
+            "competitor_exit_level": Decimal("121.5"),
+            "opened_at": _ts(),
+        }
+        fields.update(overrides)
+        return QualifiedPosition(**fields)  # type: ignore[arg-type]
 
-        context = _context().with_qualified_position(position)
+    def test_with_qualified_position_top(self) -> None:
+        position = self._position(anchor_role=AnchorRole.TOP)
 
-        assert context.qualified_position is position
+        context = _context().with_qualified_position_top(position)
 
-    def test_with_qualification_exited_position(self) -> None:
-        position = QualifiedPosition(
-            position_id=uuid.uuid4(),
-            anchor_role=AnchorRole.TOP,
-            side=TradeDirection.CE,
-            entry_strike=Decimal(24250),
-            entry_level=Decimal("120.1"),
-            target_level=Decimal("145.2"),
-            stop_loss_level=Decimal("98.3"),
-            competitor_exit_level=Decimal("121.5"),
-            opened_at=_ts(),
-        ).close(ExitReason.TARGET_HIT, _ts())
+        assert context.qualified_position_top is position
 
-        context = _context().with_qualification_exited_position(position)
+    def test_with_qualified_position_bottom(self) -> None:
+        position = self._position(anchor_role=AnchorRole.BOTTOM)
 
-        assert context.qualification_exited_position is position
+        context = _context().with_qualified_position_bottom(position)
+
+        assert context.qualified_position_bottom is position
+
+    def test_with_qualification_exited_position_top(self) -> None:
+        position = self._position(anchor_role=AnchorRole.TOP).close(ExitReason.TARGET_HIT, _ts())
+
+        context = _context().with_qualification_exited_position_top(position)
+
+        assert context.qualification_exited_position_top is position
+
+    def test_with_qualification_exited_position_bottom(self) -> None:
+        position = self._position(anchor_role=AnchorRole.BOTTOM).close(ExitReason.TARGET_HIT, _ts())
+
+        context = _context().with_qualification_exited_position_bottom(position)
+
+        assert context.qualification_exited_position_bottom is position
