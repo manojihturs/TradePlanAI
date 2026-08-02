@@ -91,3 +91,7 @@ class TestCandleMode:
     def test_none_timestamp_raises(self) -> None:
         with pytest.raises(ValidationError, match="timestamp must not be None"):
             MarketSnapshot(timestamp=None, underlying_price=Decimal(1))  # type: ignore[arg-type]
+
+    def test_negative_open_interest_raises(self, timestamp: datetime) -> None:
+        with pytest.raises(ValidationError, match="open_interest must not be negative"):
+            MarketSnapshot(timestamp=timestamp, underlying_price=Decimal(24000), open_interest=-1)

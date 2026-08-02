@@ -33,6 +33,12 @@ class MarketSnapshot:
         low: Candle low, if this is a candle-mode snapshot.
         close: Candle close, if this is a candle-mode snapshot.
         volume: Traded volume, if known. Must not be negative.
+        open_interest: Open Interest for this instrument at this
+            observation, if known. Must not be negative. Added for
+            ``trend_engine.open_interest_trend_engine.OpenInterestTrendEngine``
+            (Product Owner-confirmed, 2026-08-02) - optional, since
+            most existing snapshots (historical OHLC replay data) do
+            not carry it.
     """
 
     timestamp: datetime
@@ -42,6 +48,7 @@ class MarketSnapshot:
     low: Decimal | None = None
     close: Decimal | None = None
     volume: int | None = None
+    open_interest: int | None = None
 
     def __post_init__(self) -> None:
         if self.timestamp is None:
@@ -50,6 +57,8 @@ class MarketSnapshot:
             raise ValidationError("MarketSnapshot.underlying_price must be greater than 0.")
         if self.volume is not None and self.volume < 0:
             raise ValidationError("MarketSnapshot.volume must not be negative.")
+        if self.open_interest is not None and self.open_interest < 0:
+            raise ValidationError("MarketSnapshot.open_interest must not be negative.")
 
         ohlc = (self.open, self.high, self.low, self.close)
         if any(value is not None for value in ohlc) and not all(
