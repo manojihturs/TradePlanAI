@@ -28,13 +28,25 @@ Target/SL/TSL Clarification, all Product-Owner-supplied):
   -> PE (Entry/Target/SL/TSL Clarification). How trend itself is
   computed is UNRESOLVED - Awaiting Strategy Evidence; it is an
   injected input here, never computed by this engine.
-- A "touch" (used for "crosses" here) reuses this project's own
-  already-confirmed touch definition
-  (``winner_engine.winner_engine.WinnerEngine``, Specification Rule
-  3): a level is touched if it falls within the evaluated candle's
-  [low, high] range. No evidence at a finer granularity (e.g. candle
-  open/close-based crossing direction) exists, so this project's
-  existing convention is reused rather than inventing a new one.
+- A "touch" reuses this project's own already-confirmed touch
+  definition (``winner_engine.winner_engine.WinnerEngine``,
+  Specification Rule 3): a level is touched if it falls within the
+  evaluated candle's [low, high] range.
+- "Crosses", Product Owner-supplied verbatim (2026-08-02): "if CE
+  crosses above the PE's any level low[,] same time/candle the PE
+  should cross below the CE's any level high[,] then take trade...
+  this rule is applicable to PE entry also." A touch alone is not
+  enough - the CE candle must additionally have moved UP through its
+  level (closed at or above it) and, on the same candle, the PE
+  candle must have moved DOWN through its level (closed at or below
+  it), regardless of which side (CE or PE) is this trade's entry side
+  or confirming side - the direction requirement is tied to which
+  option (CE/PE) each candle actually is, not its entry/confirm role.
+  Engineering default (candle-close boundary is inclusive, ">=""/"<="
+  not strict ">"/"<") since the Product Owner did not specify a
+  precise close-vs-level formula and this project's own existing
+  touch definition is itself inclusive - not confirmed at that exact
+  level of precision.
 - If more than one level in a column is touched on the same candle,
   the lowest-strike match is used - an engineering default for a
   genuinely ambiguous case (mirrors ``exit_engine.exit_engine.ExitEngine``'s
@@ -139,12 +151,15 @@ class QualificationEngine:
             )
 
         side = _TREND_SIDE[trend]
-        own_snapshot = own_ce_snapshot if side is TradeDirection.CE else own_pe_snapshot
-        confirm_snapshot = own_pe_snapshot if side is TradeDirection.CE else own_ce_snapshot
+        entry_is_ce = side is TradeDirection.CE
+        own_snapshot = own_ce_snapshot if entry_is_ce else own_pe_snapshot
+        confirm_snapshot = own_pe_snapshot if entry_is_ce else own_ce_snapshot
         entry_column, confirm_column = _COLUMN_MAP[(anchor_role, side)]
 
-        entry_hit = self._find_touch(own_snapshot, reference_levels, entry_column)
-        confirm_hit = self._find_touch(confirm_snapshot, reference_levels, confirm_column)
+        entry_hit = self._find_touch(own_snapshot, reference_levels, entry_column, entry_is_ce)
+        confirm_hit = self._find_touch(
+            confirm_snapshot, reference_levels, confirm_column, not entry_is_ce
+        )
         if entry_hit is None or confirm_hit is None:
             return None
         entry_strike, entry_level = entry_hit
@@ -173,14 +188,23 @@ class QualificationEngine:
         snapshot: MarketSnapshot,
         reference_levels: tuple[ReferenceLevel, ...],
         column: str,
+        is_ce_snapshot: bool,
     ) -> tuple[Decimal, Decimal] | None:
         """Return ``(strike, value)`` for the lowest-strike level in
-        ``column`` that ``snapshot`` touches, or ``None`` if none is
-        touched. See the module docstring's tie-break note."""
-        assert snapshot.low is not None and snapshot.high is not None
+        ``column`` that ``snapshot`` both touches AND crosses in the
+        required direction (CE candles must close at/above the level,
+        PE candles at/below it - see the module docstring's "Crosses"
+        section), or ``None`` if no level satisfies both. See the
+        module docstring's tie-break note for the lowest-strike
+        choice among multiple qualifying levels."""
+        assert snapshot.low is not None and snapshot.high is not None and snapshot.close is not None
         for level in sorted(reference_levels, key=lambda lvl: lvl.strike):
             value: Decimal = getattr(level, column)
-            if snapshot.low <= value <= snapshot.high:
+            touched = snapshot.low <= value <= snapshot.high
+            crossed_direction = (
+                snapshot.close >= value if is_ce_snapshot else snapshot.close <= value
+            )
+            if touched and crossed_direction:
                 return level.strike, value
         return None
 

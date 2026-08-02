@@ -86,6 +86,36 @@ def _tight_candle(value: Decimal) -> MarketSnapshot:
     )
 
 
+def _falling_candle(value: Decimal) -> MarketSnapshot:
+    """A candle that touches ``value`` within [low, high] but closes
+    BELOW it - i.e. a wick-only touch moving down through the level,
+    not a confirmed upward cross. Used to test the CE
+    close-at-or-above direction requirement."""
+    return MarketSnapshot(
+        timestamp=_TS,
+        underlying_price=Decimal(24140),
+        open=value + Decimal("0.05"),
+        high=value + Decimal("0.05"),
+        low=value - Decimal("0.05"),
+        close=value - Decimal("0.05"),
+    )
+
+
+def _rising_candle(value: Decimal) -> MarketSnapshot:
+    """A candle that touches ``value`` within [low, high] but closes
+    ABOVE it - i.e. a wick-only touch moving up through the level, not
+    a confirmed downward cross. Used to test the PE close-at-or-below
+    direction requirement."""
+    return MarketSnapshot(
+        timestamp=_TS,
+        underlying_price=Decimal(24140),
+        open=value - Decimal("0.05"),
+        high=value + Decimal("0.05"),
+        low=value - Decimal("0.05"),
+        close=value + Decimal("0.05"),
+    )
+
+
 def _no_touch_candle() -> MarketSnapshot:
     return MarketSnapshot(
         timestamp=_TS,
@@ -199,6 +229,50 @@ class TestNoQualification:
             reference_levels=_LADDER,
             own_ce_snapshot=_tight_candle(Decimal("120.1")),
             own_pe_snapshot=_no_touch_candle(),
+            candle_timestamp=_TS,
+        )
+        assert signal is None
+
+    def test_ce_touch_without_upward_close_is_rejected(self) -> None:
+        # CE candle touches its entry level (pe_low @ 24250 = 120.1)
+        # but closes BELOW it - a downward wick, not a confirmed
+        # upward cross (Product Owner, 2026-08-02: "CE crosses above").
+        signal = QualificationEngine().evaluate(
+            anchor_role=AnchorRole.TOP,
+            trend=TrendDirection.BULLISH,
+            reference_levels=_LADDER,
+            own_ce_snapshot=_falling_candle(Decimal("120.1")),
+            own_pe_snapshot=_tight_candle(Decimal("121.5")),
+            candle_timestamp=_TS,
+        )
+        assert signal is None
+
+    def test_pe_touch_without_downward_close_is_rejected(self) -> None:
+        # PE confirming candle touches its level (ce_high @ 24250 =
+        # 121.5) but closes ABOVE it - an upward wick, not a confirmed
+        # downward cross (Product Owner: "PE should cross below").
+        signal = QualificationEngine().evaluate(
+            anchor_role=AnchorRole.TOP,
+            trend=TrendDirection.BULLISH,
+            reference_levels=_LADDER,
+            own_ce_snapshot=_tight_candle(Decimal("120.1")),
+            own_pe_snapshot=_rising_candle(Decimal("121.5")),
+            candle_timestamp=_TS,
+        )
+        assert signal is None
+
+    def test_pe_entry_touch_without_downward_close_is_rejected(self) -> None:
+        # Direction requirement applies symmetrically when PE is the
+        # entry side (bearish trend, mirrors test_row_3_top_pe_entry's
+        # own setup): PE's own candle touches its entry level
+        # (ce_high @ 24300 = 103.2) but closes ABOVE it - a PE candle
+        # must close at/below its level to count as a downward cross.
+        signal = QualificationEngine().evaluate(
+            anchor_role=AnchorRole.TOP,
+            trend=TrendDirection.BEARISH,
+            reference_levels=_LADDER,
+            own_ce_snapshot=_tight_candle(Decimal("120.1")),
+            own_pe_snapshot=_rising_candle(Decimal("103.2")),
             candle_timestamp=_TS,
         )
         assert signal is None
