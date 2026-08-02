@@ -83,6 +83,23 @@ class TestBuySellFlips:
         assert third is UTBotSignal.BUY
         assert engine.current_trailing_stop == Decimal(70)
 
+    def test_current_position_persists_between_flips(self) -> None:
+        engine = UTBotEngine(key_value=Decimal(1), atr_period=1)
+        assert engine.current_position is None
+
+        engine.update(_candle(0, "100", "90", "95"))
+        assert engine.current_position is None  # seed candle, no flip yet
+
+        engine.update(_candle(1, "80", "70", "75"))  # SELL
+        assert engine.current_position is UTBotSignal.SELL
+
+        # A subsequent no-signal candle must not clear the position.
+        engine.update(_candle(2, "65", "55", "60"))
+        assert engine.current_position is UTBotSignal.SELL
+
+        engine.update(_candle(3, "115", "105", "110"))  # BUY
+        assert engine.current_position is UTBotSignal.BUY
+
     def test_uptrend_continuation_takes_the_max_branch_no_signal(self) -> None:
         engine = UTBotEngine(key_value=Decimal(1), atr_period=1)
 

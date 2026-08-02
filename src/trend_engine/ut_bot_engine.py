@@ -87,12 +87,22 @@ class UTBotEngine:
         self._prev_close: Decimal | None = None
         self._prev_stop: Decimal | None = None
         self._prev_src: Decimal | None = None
+        self._position: UTBotSignal | None = None
 
     @property
     def current_trailing_stop(self) -> Decimal | None:
         """The most recently computed trailing stop level, or
         ``None`` before the first candle has been fed."""
         return self._prev_stop
+
+    @property
+    def current_position(self) -> UTBotSignal | None:
+        """The last Buy/Sell flip that fired, persisting across
+        candles until the opposite flip fires - mirrors the Pine
+        Script indicator's own ``pos`` variable, which carries
+        forward rather than resetting to neutral between flips.
+        ``None`` until the first flip ever fires."""
+        return self._position
 
     def update(self, candle: MarketSnapshot) -> UTBotSignal | None:
         """Feed one candle (in chronological order) and return the
@@ -142,6 +152,8 @@ class UTBotEngine:
         elif prev_src >= prev_stop and src < stop:
             signal = UTBotSignal.SELL
 
+        if signal is not None:
+            self._position = signal
         self._prev_stop = stop
         self._prev_src = src
         self._prev_close = src
